@@ -1,0 +1,15 @@
+{
+  "custom_nodes": [
+    {
+      "name": "ComfyUI-4K4D",
+      "description": "Real-time 4D view synthesis from synchronized multi-camera videos. Wraps the CVPR 2024 4K4D paper pipeline with full automation: calibration, masking, training, and novel view rendering.",
+      "install_type": "git-clone",
+      "files": ["https://github.com/Kariembassam/Claude_4K4D"],
+      "requirements": "requirements.txt",
+      "nodename_pattern": "FourK4D_",
+      "preemptions": [],
+      "pip": [],
+      "tags": ["4d", "nerf", "video", "3d", "novel-view-synthesis", "4k4d", "easyvolcap"]
+    }
+  ]
+}

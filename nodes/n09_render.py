@@ -1,0 +1,211 @@
+"""
+ComfyUI-4K4D Node 9: Render
+==============================
+Renders novel views in multiple modes: spiral, test views, free viewpoint.
+Supports H.264, ProRes, and PNG sequence output.
+"""
+
+import logging
+import os
+from pathlib import Path
+
+from core.base_node import BaseEasyVolcapNode
+from core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS
+from core.subprocess_runner import evc_train_progress_parser
+
+logger = logging.getLogger("4K4D.n09_render")
+
+
+class FourK4D_Render(BaseEasyVolcapNode):
+    """
+    Renders novel views from trained 4K4D model.
+
+    Modes:
+    - spiral: Free-viewpoint spiral camera path
+    - test_views: Render from input camera angles
+    - free_viewpoint: Custom camera path
+    """
+
+    CATEGORY = CATEGORIES["rendering"]
+    FUNCTION = "execute"
+    RETURN_TYPES = (DATASET_INFO_TYPE, "STRING", "STRING", "STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("dataset_info", "mp4_path", "prores_path", "frames_dir", "ply_output_dir", "preview_frame")
+    OUTPUT_NODE = True
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "dataset_info": (DATASET_INFO_TYPE,),
+                "render_mode": (["spiral", "test_views", "free_viewpoint"],),
+            },
+            "optional": {
+                "frame_sample": ("STRING", {"default": "0,None,1"}),
+                "n_render_views": ("INT", {"default": 300, "min": 10, "max": 2000}),
+                "focal_ratio": ("FLOAT", {"default": 0.5, "min": 0.1, "max": 2.0, "step": 0.1}),
+                "use_cuda_rasterizer": ("BOOLEAN", {"default": True}),
+                "output_format": (["mp4_h264", "mp4_prores", "png_sequence", "all"], {"default": "mp4_h264"}),
+                "render_resolution": (["1080p", "4K", "match_input"], {"default": "1080p"}),
+                "crf": ("INT", {"default": 18, "min": 0, "max": 51}),
+            },
+            "hidden": {"unique_id": "UNIQUE_ID"},
+        }
+
+    def execute(self, dataset_info, render_mode, frame_sample="0,None,1",
+                n_render_views=300, focal_ratio=0.5, use_cuda_rasterizer=True,
+                output_format="mp4_h264", render_resolution="1080p", crf=18,
+                unique_id=None):
+        return self._safe_execute(
+            self._run, dataset_info, render_mode, frame_sample, n_render_views,
+            focal_ratio, use_cuda_rasterizer, output_format, render_resolution,
+            crf, unique_id
+        )
+
+    def _run(self, dataset_info, render_mode, frame_sample, n_render_views,
+             focal_ratio, use_cuda_rasterizer, output_format, render_resolution,
+             crf, unique_id):
+        self._validate_dataset_info(dataset_info, ["dataset_root", "dataset_name"])
+
+        dataset_root = dataset_info["dataset_root"]
+        name = dataset_info["dataset_name"]
+        easyvolcap_root = dataset_info.get("easyvolcap_root", "")
+        experiment_name = dataset_info.get("experiment_name", f"4k4d_{name}")
+        config_path = dataset_info.get("config_path", "")
+
+        runner = self._create_runner()
+        render_output_dir = os.path.join(dataset_root, "render_output", render_mode)
+        os.makedirs(render_output_dir, exist_ok=True)
+
+        mp4_path = ""
+        prores_path = ""
+        frames_dir = os.path.join(render_output_dir, "frames")
+        ply_dir = os.path.join(render_output_dir, "ply")
+
+        if easyvolcap_root and os.path.exists(easyvolcap_root):
+            # Build evc-test command
+            configs = []
+            if config_path and os.path.exists(str(config_path)):
+                configs.append(str(config_path))
+
+            if render_mode == "spiral":
+                configs.extend([
+                    "configs/specs/superf.yaml",
+                    "configs/specs/spiral.yaml",
+                    "configs/specs/ibr.yaml",
+                    "configs/specs/eval.yaml",
+                ])
+            elif render_mode == "test_views":
+                configs.append("configs/specs/eval.yaml")
+            else:
+                configs.extend([
+                    "configs/specs/eval.yaml",
+                    "configs/specs/ibr.yaml",
+                ])
+
+            extra_args = {
+                "exp_name": experiment_name,
+                "val_dataloader_cfg.dataset_cfg.focal_ratio": str(focal_ratio),
+                "val_dataloader_cfg.dataset_cfg.n_render_views": str(n_render_views),
+            }
+
+            cmd = self.build_evc_command("evc-test", configs, extra_args)
+
+            result = runner.run(
+                cmd,
+                cwd=easyvolcap_root,
+                progress_parser=evc_train_progress_parser,
+                unique_id=unique_id,
+                timeout_seconds=14400,
+            )
+
+            if result.success:
+                # Find rendered output
+                result_dir = os.path.join(easyvolcap_root, "data", "result", experiment_name)
+                if os.path.exists(result_dir):
+                    # Look for rendered frames
+                    for root, dirs, files in os.walk(result_dir):
+                        for f in files:
+                            if f.endswith(".jpg") or f.endswith(".png"):
+                                frames_dir = root
+                                break
+
+        # Package output in requested formats
+        if os.path.exists(frames_dir) and os.listdir(frames_dir):
+            if output_format in ("mp4_h264", "all"):
+                mp4_path = os.path.join(render_output_dir, f"{name}_render.mp4")
+                self._encode_h264(frames_dir, mp4_path, crf, runner)
+
+            if output_format in ("mp4_prores", "all"):
+                prores_path = os.path.join(render_output_dir, f"{name}_render_prores.mov")
+                self._encode_prores(frames_dir, prores_path, runner)
+
+        # Generate preview frame
+        preview = self._load_preview_frame(frames_dir)
+
+        updated_info = self._update_dataset_info(dataset_info, {
+            "render_output": render_output_dir,
+        })
+
+        return (
+            updated_info,
+            mp4_path,
+            prores_path,
+            frames_dir,
+            ply_dir,
+            preview,
+        )
+
+    def _encode_h264(self, frames_dir, output_path, crf, runner):
+        """Encode frames to H.264 MP4."""
+        # Find frame pattern
+        frames = sorted(Path(frames_dir).glob("*.jpg")) + sorted(Path(frames_dir).glob("*.png"))
+        if not frames:
+            return
+
+        ext = frames[0].suffix
+        pattern = os.path.join(frames_dir, f"%06d{ext}")
+
+        runner.run_simple([
+            "ffmpeg", "-y",
+            "-framerate", "30",
+            "-i", pattern,
+            "-c:v", "libx264",
+            "-crf", str(crf),
+            "-pix_fmt", "yuv420p",
+            output_path,
+        ], timeout=600)
+
+    def _encode_prores(self, frames_dir, output_path, runner):
+        """Encode frames to ProRes 4444."""
+        frames = sorted(Path(frames_dir).glob("*.jpg")) + sorted(Path(frames_dir).glob("*.png"))
+        if not frames:
+            return
+
+        ext = frames[0].suffix
+        pattern = os.path.join(frames_dir, f"%06d{ext}")
+
+        runner.run_simple([
+            "ffmpeg", "-y",
+            "-framerate", "30",
+            "-i", pattern,
+            "-c:v", "prores_ks",
+            "-profile:v", "4444",
+            "-pix_fmt", "yuva444p10le",
+            output_path,
+        ], timeout=600)
+
+    def _load_preview_frame(self, frames_dir):
+        """Load first rendered frame as preview."""
+        try:
+            import numpy as np
+            from PIL import Image
+
+            frames_path = Path(frames_dir)
+            frames = sorted(frames_path.glob("*.jpg")) + sorted(frames_path.glob("*.png"))
+            if frames:
+                img = Image.open(frames[0]).convert("RGB")
+                img = img.resize((640, 360))
+                return np.array(img)[None, :, :, :].astype(np.float32) / 255.0
+        except Exception:
+            pass
+        return self._create_error_image("No rendered frames yet")

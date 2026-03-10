@@ -1,0 +1,238 @@
+{
+  "last_node_id": 10,
+  "last_link_id": 9,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "FourK4D_FolderIngest",
+      "pos": [100, 200],
+      "size": {"0": 320, "1": 180},
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [1], "slot_index": 0},
+        {"name": "has_calibration", "type": "BOOLEAN", "links": [], "slot_index": 1},
+        {"name": "has_masks", "type": "BOOLEAN", "links": [], "slot_index": 2},
+        {"name": "validation_report", "type": "STRING", "links": [], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_FolderIngest"},
+      "widgets_values": ["/workspace/data/my_scene", "my_scene", 5, 0.0, true]
+    },
+    {
+      "id": 2,
+      "type": "FourK4D_DependencyInstall",
+      "pos": [500, 200],
+      "size": {"0": 320, "1": 160},
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 1}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [2], "slot_index": 0},
+        {"name": "install_log", "type": "STRING", "links": [], "slot_index": 1},
+        {"name": "all_ready", "type": "BOOLEAN", "links": [], "slot_index": 2},
+        {"name": "python_path", "type": "STRING", "links": [], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_DependencyInstall"},
+      "widgets_values": ["stable", false, "auto", false]
+    },
+    {
+      "id": 3,
+      "type": "FourK4D_FrameExtract",
+      "pos": [900, 200],
+      "size": {"0": 320, "1": 180},
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 2}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [3], "slot_index": 0},
+        {"name": "frame_count", "type": "INT", "links": [], "slot_index": 1},
+        {"name": "sync_offsets", "type": "STRING", "links": [], "slot_index": 2},
+        {"name": "preview_grid", "type": "IMAGE", "links": [], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_FrameExtract"},
+      "widgets_values": [0.5, 0.0, 0, -1, "auto", 10]
+    },
+    {
+      "id": 4,
+      "type": "FourK4D_CameraCalibration",
+      "pos": [1300, 200],
+      "size": {"0": 320, "1": 200},
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 3}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [4], "slot_index": 0},
+        {"name": "calibration_valid", "type": "BOOLEAN", "links": [], "slot_index": 1},
+        {"name": "camera_frustum_preview", "type": "IMAGE", "links": [], "slot_index": 2},
+        {"name": "calibration_report", "type": "STRING", "links": [], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_CameraCalibration"},
+      "widgets_values": ["auto_colmap", "", "", "fixed", "medium", true, "auto"]
+    },
+    {
+      "id": 5,
+      "type": "FourK4D_MaskGeneration",
+      "pos": [1700, 200],
+      "size": {"0": 320, "1": 180},
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 4}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [5], "slot_index": 0},
+        {"name": "mask_preview_grid", "type": "IMAGE", "links": [], "slot_index": 1},
+        {"name": "avg_mask_confidence", "type": "FLOAT", "links": [], "slot_index": 2},
+        {"name": "masking_report", "type": "STRING", "links": [], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_MaskGeneration"},
+      "widgets_values": ["auto_rvm", "", "mobilenetv3", 0.25, "foreground_only", 2]
+    },
+    {
+      "id": 6,
+      "type": "FourK4D_VisualHull",
+      "pos": [2100, 200],
+      "size": {"0": 320, "1": 160},
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 5}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [6], "slot_index": 0},
+        {"name": "hull_preview", "type": "IMAGE", "links": [], "slot_index": 1},
+        {"name": "bounding_box_str", "type": "STRING", "links": [], "slot_index": 2},
+        {"name": "point_count", "type": "INT", "links": [], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_VisualHull"},
+      "widgets_values": [0.75, 0.3, true]
+    },
+    {
+      "id": 7,
+      "type": "FourK4D_QualityGate",
+      "pos": [2500, 200],
+      "size": {"0": 320, "1": 200},
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 6}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [7], "slot_index": 0},
+        {"name": "gate_passed", "type": "BOOLEAN", "links": [], "slot_index": 1},
+        {"name": "quality_report", "type": "STRING", "links": [], "slot_index": 2},
+        {"name": "mask_quality_heatmap", "type": "IMAGE", "links": [], "slot_index": 3},
+        {"name": "coverage_heatmap", "type": "IMAGE", "links": [], "slot_index": 4},
+        {"name": "sync_report", "type": "IMAGE", "links": [], "slot_index": 5},
+        {"name": "blur_report", "type": "STRING", "links": [], "slot_index": 6}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_QualityGate"},
+      "widgets_values": [0.75, 0.10, 0.85, false, ""]
+    },
+    {
+      "id": 8,
+      "type": "FourK4D_Train",
+      "pos": [2900, 200],
+      "size": {"0": 360, "1": 300},
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 7}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [8], "slot_index": 0},
+        {"name": "training_succeeded", "type": "BOOLEAN", "links": [], "slot_index": 1},
+        {"name": "final_psnr", "type": "FLOAT", "links": [], "slot_index": 2},
+        {"name": "preview_image", "type": "IMAGE", "links": [], "slot_index": 3},
+        {"name": "model_path", "type": "STRING", "links": [], "slot_index": 4},
+        {"name": "log_text", "type": "STRING", "links": [], "slot_index": 5}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_Train"},
+      "widgets_values": ["preview_static", 200, 100, true, "0,None,1", "0,None,1", "none", true, ""]
+    },
+    {
+      "id": 9,
+      "type": "FourK4D_Render",
+      "pos": [3350, 200],
+      "size": {"0": 320, "1": 220},
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 8}
+      ],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [9], "slot_index": 0},
+        {"name": "mp4_path", "type": "STRING", "links": [], "slot_index": 1},
+        {"name": "prores_path", "type": "STRING", "links": [], "slot_index": 2},
+        {"name": "frames_dir", "type": "STRING", "links": [], "slot_index": 3},
+        {"name": "ply_output_dir", "type": "STRING", "links": [], "slot_index": 4},
+        {"name": "preview_frame", "type": "IMAGE", "links": [], "slot_index": 5}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_Render"},
+      "widgets_values": ["spiral", "0,None,1", 300, 0.5, true, "mp4_h264", "1080p", 18]
+    },
+    {
+      "id": 10,
+      "type": "FourK4D_StatusMonitor",
+      "pos": [3750, 200],
+      "size": {"0": 340, "1": 200},
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 9}
+      ],
+      "outputs": [
+        {"name": "status_text", "type": "STRING", "links": [], "slot_index": 0},
+        {"name": "current_iteration", "type": "INT", "links": [], "slot_index": 1},
+        {"name": "current_psnr", "type": "FLOAT", "links": [], "slot_index": 2},
+        {"name": "loss_curve_image", "type": "IMAGE", "links": [], "slot_index": 3},
+        {"name": "estimated_time_remaining", "type": "STRING", "links": [], "slot_index": 4},
+        {"name": "training_phase", "type": "STRING", "links": [], "slot_index": 5},
+        {"name": "disk_usage_gb", "type": "FLOAT", "links": [], "slot_index": 6}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_StatusMonitor"},
+      "widgets_values": [50, true]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "DATASET_INFO"],
+    [2, 2, 0, 3, 0, "DATASET_INFO"],
+    [3, 3, 0, 4, 0, "DATASET_INFO"],
+    [4, 4, 0, 5, 0, "DATASET_INFO"],
+    [5, 5, 0, 6, 0, "DATASET_INFO"],
+    [6, 6, 0, 7, 0, "DATASET_INFO"],
+    [7, 7, 0, 8, 0, "DATASET_INFO"],
+    [8, 8, 0, 9, 0, "DATASET_INFO"],
+    [9, 9, 0, 10, 0, "DATASET_INFO"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1.0,
+      "offset": [0, 0]
+    },
+    "info": {
+      "name": "4K4D Training Preview",
+      "description": "Quick training test: Full preprocessing chain -> Train (preview_static, 200 iterations) -> Render -> StatusMonitor. ~10 min on RTX 4090."
+    }
+  },
+  "version": 0.4
+}

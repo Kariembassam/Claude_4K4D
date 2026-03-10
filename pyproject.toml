@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-4k4d"
+version = "2.0.0"
+description = "ComfyUI custom node pack for real-time 4D view synthesis using 4K4D (CVPR 2024)"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Kariem Bassam"},
+]
+keywords = ["4d", "nerf", "video", "3d", "novel-view-synthesis", "comfyui"]
+
+dependencies = [
+    "jinja2>=3.1.0",
+    "pyyaml>=6.0",
+    "psutil>=5.9.0",
+    "pillow>=9.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Kariembassam/Claude_4K4D"
+Repository = "https://github.com/Kariembassam/Claude_4K4D"
+
+[tool.setuptools.packages.find]
+include = ["core*", "nodes*", "configs*", "web*"]

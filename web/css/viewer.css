@@ -1,0 +1,82 @@
+/* ComfyUI-4K4D Viewer Styles */
+
+.fourk4d-viewer-container {
+    background: #1a1a1a;
+    border-radius: 8px;
+    overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.fourk4d-tabs {
+    display: flex;
+    background: #252525;
+    border-bottom: 1px solid #333;
+}
+
+.fourk4d-tab {
+    flex: 1;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.fourk4d-tab:hover {
+    color: #ccc;
+    background: #2a2a2a;
+}
+
+.fourk4d-tab.active {
+    color: #ff8c00;
+    background: #1a1a1a;
+    border-bottom: 2px solid #ff8c00;
+}
+
+.fourk4d-tab-content {
+    padding: 10px;
+    min-height: 200px;
+}
+
+.fourk4d-tab-content video {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+}
+
+/* Status Monitor */
+.fourk4d-status-container pre {
+    margin: 0;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    line-height: 1.4;
+}
+
+/* Quality Gate */
+.fourk4d-qgate-container {
+    text-align: center;
+    padding: 15px;
+}
+
+.fourk4d-gate-indicator {
+    font-size: 48px;
+    margin-bottom: 10px;
+}
+
+/* Progress bar in nodes */
+.fourk4d-progress {
+    height: 4px;
+    background: #333;
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 4px 0;
+}
+
+.fourk4d-progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #ff8c00, #ffb84d);
+    transition: width 0.3s ease;
+}

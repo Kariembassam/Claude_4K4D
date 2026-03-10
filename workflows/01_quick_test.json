@@ -1,0 +1,63 @@
+{
+  "last_node_id": 2,
+  "last_link_id": 1,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "FourK4D_FolderIngest",
+      "pos": [100, 200],
+      "size": {"0": 320, "1": 180},
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "links": [1], "slot_index": 0},
+        {"name": "has_calibration", "type": "BOOLEAN", "links": [], "slot_index": 1},
+        {"name": "has_masks", "type": "BOOLEAN", "links": [], "slot_index": 2},
+        {"name": "validation_report", "type": "STRING", "links": [], "slot_index": 3}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_FolderIngest"},
+      "widgets_values": ["/workspace/data/my_scene", "my_scene", 5, 0.0, true]
+    },
+    {
+      "id": 2,
+      "type": "FourK4D_StatusMonitor",
+      "pos": [500, 200],
+      "size": {"0": 340, "1": 200},
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [
+        {"name": "dataset_info", "type": "DATASET_INFO", "link": 1}
+      ],
+      "outputs": [
+        {"name": "status_text", "type": "STRING", "links": [], "slot_index": 0},
+        {"name": "current_iteration", "type": "INT", "links": [], "slot_index": 1},
+        {"name": "current_psnr", "type": "FLOAT", "links": [], "slot_index": 2},
+        {"name": "loss_curve_image", "type": "IMAGE", "links": [], "slot_index": 3},
+        {"name": "estimated_time_remaining", "type": "STRING", "links": [], "slot_index": 4},
+        {"name": "training_phase", "type": "STRING", "links": [], "slot_index": 5},
+        {"name": "disk_usage_gb", "type": "FLOAT", "links": [], "slot_index": 6}
+      ],
+      "properties": {"Node name for S&R": "FourK4D_StatusMonitor"},
+      "widgets_values": [50, true]
+    }
+  ],
+  "links": [
+    [1, 1, 0, 2, 0, "DATASET_INFO"]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 1.0,
+      "offset": [0, 0]
+    },
+    "info": {
+      "name": "4K4D Quick Test",
+      "description": "Minimal test: FolderIngest -> StatusMonitor. Validates input data folder structure."
+    }
+  },
+  "version": 0.4
+}
