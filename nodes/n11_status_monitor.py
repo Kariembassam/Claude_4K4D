@@ -9,9 +9,9 @@ import os
 import time
 from pathlib import Path
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import CATEGORIES, DATASET_INFO_TYPE
-from core.checkpoint_manager import CheckpointManager
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import CATEGORIES, DATASET_INFO_TYPE
+from ..core.checkpoint_manager import CheckpointManager
 
 logger = logging.getLogger("4K4D.n11_status_monitor")
 

@@ -10,14 +10,14 @@ import sys
 import logging
 from pathlib import Path
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import (
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import (
     CATEGORIES, DATASET_INFO_TYPE, STABLE_PINS, LATEST_PINS,
     REPO_URLS, INSTALL_SENTINEL, DIR_DEPS,
 )
-from core.env_manager import EnvManager
-from core.subprocess_runner import SubprocessRunner, pip_install_progress_parser
-from core.cuda_builder import CudaBuilder
+from ..core.env_manager import EnvManager
+from ..core.subprocess_runner import SubprocessRunner, pip_install_progress_parser
+from ..core.cuda_builder import CudaBuilder
 
 logger = logging.getLogger("4K4D.n02_dependency_install")
 

@@ -10,10 +10,10 @@ import logging
 import os
 from pathlib import Path
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS
-from core.checkpoint_manager import CheckpointManager
-from core.config_generator import ConfigGenerator
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS
+from ..core.checkpoint_manager import CheckpointManager
+from ..core.config_generator import ConfigGenerator
 
 logger = logging.getLogger("4K4D.n06_visual_hull")
 

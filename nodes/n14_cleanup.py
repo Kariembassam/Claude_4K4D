@@ -11,8 +11,8 @@ import shutil
 import tarfile
 from pathlib import Path
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import CATEGORIES, DATASET_INFO_TYPE
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import CATEGORIES, DATASET_INFO_TYPE
 
 logger = logging.getLogger("4K4D.n14_cleanup")
 

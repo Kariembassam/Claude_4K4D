@@ -14,9 +14,9 @@ Checks:
 import logging
 import os
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS
-from core.quality_checker import QualityChecker
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS
+from ..core.quality_checker import QualityChecker
 
 logger = logging.getLogger("4K4D.n06b_quality_gate")
 

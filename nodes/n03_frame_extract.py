@@ -11,12 +11,12 @@ import os
 import subprocess
 from pathlib import Path
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS, FRAME_NAME_FORMAT
-from core.format_detector import FormatDetector
-from core.sync_aligner import SyncAligner
-from core.checkpoint_manager import CheckpointManager
-from core.dataset_structure import create_dataset_dirs
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS, FRAME_NAME_FORMAT
+from ..core.format_detector import FormatDetector
+from ..core.sync_aligner import SyncAligner
+from ..core.checkpoint_manager import CheckpointManager
+from ..core.dataset_structure import create_dataset_dirs
 
 logger = logging.getLogger("4K4D.n03_frame_extract")
 

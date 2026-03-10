@@ -25,8 +25,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import (
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import (
     CATEGORIES,
     DATASET_INFO_TYPE,
     DEFAULTS,
@@ -34,9 +34,9 @@ from core.constants import (
     PSNR_ERROR_THRESHOLD,
     PSNR_EXPECTED_PREVIEW,
 )
-from core.checkpoint_manager import CheckpointManager
-from core.config_generator import ConfigGenerator
-from core.subprocess_runner import evc_train_progress_parser, evc_psnr_parser
+from ..core.checkpoint_manager import CheckpointManager
+from ..core.config_generator import ConfigGenerator
+from ..core.subprocess_runner import evc_train_progress_parser, evc_psnr_parser
 
 logger = logging.getLogger("4K4D.n07_train")
 

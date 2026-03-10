@@ -26,8 +26,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import (
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import (
     CATEGORIES,
     DATASET_INFO_TYPE,
     DEFAULTS,
@@ -35,8 +35,8 @@ from core.constants import (
     SUPPORTED_IMAGE_FORMATS,
     create_empty_dataset_info,
 )
-from core.format_detector import FormatDetector
-from core.dataset_structure import create_dataset_dirs, validate_dataset_structure
+from ..core.format_detector import FormatDetector
+from ..core.dataset_structure import create_dataset_dirs, validate_dataset_structure
 
 logger = logging.getLogger("4K4D.n01_folder_ingest")
 

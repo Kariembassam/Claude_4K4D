@@ -9,9 +9,9 @@ import logging
 import os
 from pathlib import Path
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS
-from core.subprocess_runner import evc_train_progress_parser
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import CATEGORIES, DATASET_INFO_TYPE, DEFAULTS
+from ..core.subprocess_runner import evc_train_progress_parser
 
 logger = logging.getLogger("4K4D.n09_render")
 

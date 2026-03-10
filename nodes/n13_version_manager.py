@@ -18,8 +18,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from core.base_node import BaseEasyVolcapNode
-from core.constants import (
+from ..core.base_node import BaseEasyVolcapNode
+from ..core.constants import (
     CATEGORIES,
     STABLE_PINS,
     LATEST_PINS,
