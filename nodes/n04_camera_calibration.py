@@ -286,7 +286,10 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
                        [0.0, focal, cy],
                        [0.0, 0.0, 1.0]], dtype=np.float64)
         dist = np.zeros((1, 5), dtype=np.float64)
-        R = np.eye(3, dtype=np.float64)
+        # R must be a 3x1 Rodrigues rotation vector (NOT a 3x3 matrix).
+        # EasyVolcap's read_camera() calls cv2.Rodrigues(Rvec) on it.
+        # [0,0,0] = identity rotation in Rodrigues form.
+        R_vec = np.zeros((3, 1), dtype=np.float64)
         T = np.zeros((3, 1), dtype=np.float64)
 
         def _write_opencv_yml(filepath, names, data_dict):
@@ -310,7 +313,7 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
         # Build extri data
         extri_data = {}
         for n in camera_names:
-            extri_data[f"R_{n}"] = R
+            extri_data[f"R_{n}"] = R_vec
             extri_data[f"T_{n}"] = T
 
         extri_path = os.path.join(dataset_root, "extri.yml")
