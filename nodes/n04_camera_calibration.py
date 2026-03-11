@@ -236,8 +236,21 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
 
         preview = self._create_error_image("Camera calibration preview")
 
+        # Detect actual camera count from image directories
+        images_root = Path(dataset_root) / "images"
+        if images_root.exists():
+            detected_cams = [
+                d.name for d in sorted(images_root.iterdir())
+                if d.is_dir() and d.name.isdigit()
+            ]
+            if detected_cams:
+                camera_count = len(detected_cams)
+
         return (
-            self._update_dataset_info(dataset_info, {"has_calibration": calibration_valid}),
+            self._update_dataset_info(dataset_info, {
+                "has_calibration": calibration_valid,
+                "camera_count": camera_count,
+            }),
             calibration_valid,
             preview,
             "\n".join(report_lines),
@@ -251,8 +264,25 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
 
         Files are written in OpenCV FileStorage YAML format (%YAML:1.0 header)
         which is required by EasyVolcap's cv2.FileStorage reader.
+
+        Camera count is determined from actual image directories (images/00,
+        images/01, ...) rather than the camera_count parameter, which may
+        be stale.
         """
         import numpy as np
+
+        # Detect actual camera directories
+        images_root = Path(dataset_root) / "images"
+        if images_root.exists():
+            cam_dirs = sorted([
+                d.name for d in images_root.iterdir()
+                if d.is_dir() and d.name.isdigit()
+            ])
+            if cam_dirs:
+                camera_count = len(cam_dirs)
+                self._node_logger.info(
+                    f"Detected {camera_count} camera directories: {cam_dirs}"
+                )
 
         # Parse resolution from string like "1920x1080"
         width, height = 1920, 1080  # defaults
@@ -293,13 +323,43 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
         T = np.zeros((3, 1), dtype=np.float64)
 
         def _write_opencv_yml(filepath, names, data_dict):
-            """Write calibration in OpenCV FileStorage YAML format."""
+            """Write calibration in OpenCV FileStorage YAML format.
+
+            EasyVolcap's FileStorage wrapper reads 'names' as a YAML
+            sequence (dt='list'), iterating node children with .string().
+            Raw cv2.FileStorage.write() stores Python lists as matrices,
+            which breaks that reader.  So we write the file manually:
+            names as a YAML sequence, matrices via cv2.FileStorage to a
+            temp file, then splice them together.
+            """
             import cv2
-            fs = cv2.FileStorage(filepath, cv2.FILE_STORAGE_WRITE)
-            fs.write("names", names)
+            import tempfile
+
+            # Write matrices to a temp file via cv2 (gets the %YAML header)
+            tmp = tempfile.mktemp(suffix=".yml")
+            fs = cv2.FileStorage(tmp, cv2.FILE_STORAGE_WRITE)
             for key, value in data_dict.items():
                 fs.write(key, value)
             fs.release()
+
+            # Read back, skip the %YAML header line
+            with open(tmp, "r") as f:
+                lines = f.readlines()
+            os.remove(tmp)
+
+            matrix_lines = [l for l in lines if not l.startswith("%YAML")]
+
+            # Build final file: header + names sequence + matrices
+            with open(filepath, "w") as f:
+                f.write("%YAML:1.0\n---\n")
+                f.write("names:\n")
+                for n in names:
+                    f.write(f'   - "{n}"\n')
+                for line in matrix_lines:
+                    # Skip the leading "---" that cv2 writes
+                    if line.strip() == "---":
+                        continue
+                    f.write(line)
 
         # Build intri data
         intri_data = {}
