@@ -217,6 +217,16 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
                 self._node_logger.error(f"Synthetic calibration failed: {e}")
                 report_lines.append(f"  Synthetic calibration also failed: {e}")
 
+        # Ensure optimized/ copies exist (EasyVolcap looks there)
+        if calibration_valid:
+            opt_dir = os.path.join(dataset_root, "optimized")
+            os.makedirs(opt_dir, exist_ok=True)
+            for fname in ("intri.yml", "extri.yml"):
+                src = os.path.join(dataset_root, fname)
+                dst = os.path.join(opt_dir, fname)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+
         if calibration_valid:
             cm.mark_completed("camera_calibration")
             report_lines.append("\nCalibration VALID: extri.yml and intri.yml present.")
@@ -308,9 +318,17 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
         with open(extri_path, "w") as f:
             f.write("\n".join(extri_blocks))
 
+        # EasyVolcap also looks in optimized/ subdirectory — copy there too
+        optimized_dir = os.path.join(dataset_root, "optimized")
+        os.makedirs(optimized_dir, exist_ok=True)
+        opt_intri = os.path.join(optimized_dir, "intri.yml")
+        opt_extri = os.path.join(optimized_dir, "extri.yml")
+        shutil.copy2(intri_path, opt_intri)
+        shutil.copy2(extri_path, opt_extri)
+
         self._node_logger.info(
             f"Wrote synthetic calibration: {intri_path}, {extri_path} "
-            f"(focal={focal:.0f}, resolution={width}x{height})"
+            f"+ optimized/ copies (focal={focal:.0f}, resolution={width}x{height})"
         )
 
     def _run_direct_colmap(self, dataset_root, matcher_type, runner, report_lines):

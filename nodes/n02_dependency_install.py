@@ -229,7 +229,18 @@ class FourK4D_DependencyInstall(BaseEasyVolcapNode):
 
         # Step 10: Auxiliary packages
         log_lines.append("\nSTEP 10: Installing auxiliary packages...")
-        aux_packages = ["open3d", "gdown", "ffmpeg-python", "scipy"]
+        aux_packages = [
+            "open3d", "gdown", "ffmpeg-python", "scipy",
+            "yapf", "trimesh", "websockets",
+            "scikit-image", "tensorboard",
+            "pyperclip", "PyTurboJPEG",
+            "pyntcloud", "PyMCubes", "imgui-bundle", "PyGLM",
+            "opencv-python-headless", "tqdm", "dotdict",
+            "ruamel.yaml", "addict", "ujson", "commentjson",
+            "yacs", "plyfile", "smplx", "h5py",
+            "lpips", "kornia", "einops",
+            "pytorch-msssim", "mediapy",
+        ]
         for pkg in aux_packages:
             result = runner.run_simple(
                 [sys.executable, "-m", "pip", "install", pkg],

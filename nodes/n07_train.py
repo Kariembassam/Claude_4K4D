@@ -395,7 +395,14 @@ class FourK4D_Train(BaseEasyVolcapNode):
         else:
             timeout_sec = 172800  # 48 hours max for full training
 
-        cwd = easyvolcap_root if easyvolcap_root and Path(easyvolcap_root).is_dir() else None
+        # evc-train must run from the 4K4D repo directory (not EasyVolcap)
+        # because configs/exps/4k4d/*.yaml live in the 4K4D repo.
+        fourk4d_root = ""
+        if easyvolcap_root:
+            candidate = str(Path(easyvolcap_root).parent / "4K4D")
+            if Path(candidate).is_dir():
+                fourk4d_root = candidate
+        cwd = fourk4d_root if fourk4d_root else (easyvolcap_root if easyvolcap_root and Path(easyvolcap_root).is_dir() else None)
 
         result = runner.run(
             cmd=cmd,
@@ -510,8 +517,8 @@ class FourK4D_Train(BaseEasyVolcapNode):
         """
         configs = []
 
-        # Base 4K4D config (from EasyVolcap's config directory)
-        configs.append("configs/exps/4k4d/4k4d_0013_01.yaml")
+        # Base 4K4D config (from 4K4D repo's config directory)
+        configs.append("configs/exps/4k4d/4k4d_0013_01_r4.yaml")
 
         # Dataset-specific config
         dataset_config = dataset_info.get("config_path")
