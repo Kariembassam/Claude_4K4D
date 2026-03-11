@@ -25,7 +25,7 @@
       "inputs": [{"name": "dataset_info", "type": "DATASET_INFO", "link": 1}],
       "outputs": [{"name": "DATASET_INFO", "type": "DATASET_INFO", "links": [2], "slot_index": 0}],
       "properties": {"Node name for S&R": "FourK4D_Render"},
-      "widgets_values": ["spiral", "h264", 30, 120]
+      "widgets_values": ["spiral", "0,None,1", 300, 0.5, true, "mp4_h264", "1080p", 18]
     },
     {
       "id": 3,
