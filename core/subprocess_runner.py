@@ -175,8 +175,12 @@ class SubprocessRunner:
                 run_env.update(env)
 
             # Open process
+            # stdin=DEVNULL prevents child processes (e.g. apt-get) from
+            # reading stdin, which would send SIGTTIN and stop ComfyUI
+            # when it runs as a background process.
             self._process = subprocess.Popen(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
