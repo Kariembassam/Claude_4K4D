@@ -249,11 +249,11 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
         """
         Generate synthetic calibration files when COLMAP is unavailable.
 
-        For monocular or uncalibrated setups, we create approximate intrinsics
-        (focal length ≈ image width, principal point at center) and identity
-        extrinsics (camera at origin). This is standard practice for single-camera
-        4K4D/NeRF workflows where no multi-view calibration is possible.
+        Files are written in OpenCV FileStorage YAML format (%YAML:1.0 header)
+        which is required by EasyVolcap's cv2.FileStorage reader.
         """
+        import numpy as np
+
         # Parse resolution from string like "1920x1080"
         width, height = 1920, 1080  # defaults
         if resolution_str and "x" in resolution_str:
@@ -276,55 +276,51 @@ class FourK4D_CameraCalibration(BaseEasyVolcapNode):
                     pass
 
         # Approximate focal length: ~0.8x larger dimension
-        # This gives roughly 53° horizontal FoV, typical for phone/consumer cameras
         focal = float(max(width, height)) * 0.8
         cx = float(width) / 2.0
         cy = float(height) / 2.0
 
         camera_names = [f"{i:02d}" for i in range(camera_count)]
-        names_yaml = "\n".join(f"- '{n}'" for n in camera_names)
 
-        # Write intri.yml (camera intrinsics)
-        intri_blocks = [f"names:\n{names_yaml}\n"]
+        K = np.array([[focal, 0.0, cx],
+                       [0.0, focal, cy],
+                       [0.0, 0.0, 1.0]], dtype=np.float64)
+        dist = np.zeros((1, 5), dtype=np.float64)
+        R = np.eye(3, dtype=np.float64)
+        T = np.zeros((3, 1), dtype=np.float64)
+
+        def _write_opencv_yml(filepath, names, data_dict):
+            """Write calibration in OpenCV FileStorage YAML format."""
+            import cv2
+            fs = cv2.FileStorage(filepath, cv2.FILE_STORAGE_WRITE)
+            fs.write("names", names)
+            for key, value in data_dict.items():
+                fs.write(key, value)
+            fs.release()
+
+        # Build intri data
+        intri_data = {}
         for n in camera_names:
-            intri_blocks.append(
-                f"K_{n}:\n"
-                f"- [{focal:.1f}, 0.0, {cx:.1f}]\n"
-                f"- [0.0, {focal:.1f}, {cy:.1f}]\n"
-                f"- [0.0, 0.0, 1.0]\n"
-                f"dist_{n}:\n"
-                f"- [0.0, 0.0, 0.0, 0.0, 0.0]\n"
-            )
+            intri_data[f"K_{n}"] = K
+            intri_data[f"dist_{n}"] = dist
 
         intri_path = os.path.join(dataset_root, "intri.yml")
-        with open(intri_path, "w") as f:
-            f.write("\n".join(intri_blocks))
+        _write_opencv_yml(intri_path, camera_names, intri_data)
 
-        # Write extri.yml (camera extrinsics — identity for single camera)
-        extri_blocks = [f"names:\n{names_yaml}\n"]
+        # Build extri data
+        extri_data = {}
         for n in camera_names:
-            extri_blocks.append(
-                f"R_{n}:\n"
-                f"- [1.0, 0.0, 0.0]\n"
-                f"- [0.0, 1.0, 0.0]\n"
-                f"- [0.0, 0.0, 1.0]\n"
-                f"T_{n}:\n"
-                f"- [0.0]\n"
-                f"- [0.0]\n"
-                f"- [0.0]\n"
-            )
+            extri_data[f"R_{n}"] = R
+            extri_data[f"T_{n}"] = T
 
         extri_path = os.path.join(dataset_root, "extri.yml")
-        with open(extri_path, "w") as f:
-            f.write("\n".join(extri_blocks))
+        _write_opencv_yml(extri_path, camera_names, extri_data)
 
         # EasyVolcap also looks in optimized/ subdirectory — copy there too
         optimized_dir = os.path.join(dataset_root, "optimized")
         os.makedirs(optimized_dir, exist_ok=True)
-        opt_intri = os.path.join(optimized_dir, "intri.yml")
-        opt_extri = os.path.join(optimized_dir, "extri.yml")
-        shutil.copy2(intri_path, opt_intri)
-        shutil.copy2(extri_path, opt_extri)
+        shutil.copy2(intri_path, os.path.join(optimized_dir, "intri.yml"))
+        shutil.copy2(extri_path, os.path.join(optimized_dir, "extri.yml"))
 
         self._node_logger.info(
             f"Wrote synthetic calibration: {intri_path}, {extri_path} "
