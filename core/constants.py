@@ -117,7 +117,11 @@ def create_empty_dataset_info() -> dict:
         "model_path": None,
         "supercharged_path": None,
         "render_output": None,
-        "quality_gate_passed": False,
+        # NOTE: quality_gate_passed is intentionally NOT initialized here.
+        # It should ONLY be set by the QualityGate node (n06b).
+        # If absent, downstream nodes treat it as "not yet checked" and proceed
+        # with a warning. Initializing to False would create a trap where
+        # training is blocked even when QualityGate hasn't run or was bypassed.
         "dep_version_mode": "stable",
         "background_mode": "foreground_only",
         "config_path": None,

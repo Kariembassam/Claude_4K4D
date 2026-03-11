@@ -50,16 +50,24 @@ class FourK4D_SuperCharge(BaseEasyVolcapNode):
     def _run(self, dataset_info, sampler_type, frame_sample, unique_id):
         self._validate_dataset_info(dataset_info, ["dataset_root", "dataset_name"])
 
-        # Check quality gate
-        if not dataset_info.get("quality_gate_passed", False):
+        # Check quality gate — only block if explicitly set to False
+        # If key is absent or None, QualityGate was bypassed — proceed with warning
+        qg_value = dataset_info.get("quality_gate_passed")
+        if qg_value is False:
             raise RuntimeError(
                 "Quality Gate has not passed. Cannot proceed with SuperCharge.\n"
-                "Run the QualityGate node first and ensure all checks pass."
+                "Run the QualityGate node first and ensure all checks pass,\n"
+                "or set override_and_proceed=True and type 'I UNDERSTAND' to bypass."
+            )
+        elif qg_value is None or "quality_gate_passed" not in dataset_info:
+            self._node_logger.warning(
+                "Quality gate was not run (node bypassed or not connected). "
+                "Proceeding with SuperCharge without quality validation."
             )
 
         dataset_root = dataset_info["dataset_root"]
         name = dataset_info["dataset_name"]
-        easyvolcap_root = dataset_info.get("easyvolcap_root", "")
+        easyvolcap_root = dataset_info.get("easyvolcap_root") or ""
         runner = self._create_runner()
 
         # Auto-select sampler based on background mode
@@ -68,8 +76,8 @@ class FourK4D_SuperCharge(BaseEasyVolcapNode):
             sampler_type = "SuperChargedR4DVB"
             self._node_logger.info("Auto-selected SuperChargedR4DVB for full-scene mode")
 
-        experiment_name = dataset_info.get("experiment_name", f"4k4d_{name}")
-        config_path = dataset_info.get("config_path", "")
+        experiment_name = dataset_info.get("experiment_name") or f"4k4d_{name}"
+        config_path = dataset_info.get("config_path") or ""
 
         # Build charger command
         deps_dir = os.path.join(self.env.paths["deps"], "4K4D")

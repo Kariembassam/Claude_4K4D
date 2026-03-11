@@ -120,7 +120,9 @@ class BaseEasyVolcapNode(abc.ABC):
             user_error = self._format_user_error(e)
 
             # Try to return graceful error through node outputs
-            return self._make_error_output(user_error, kwargs)
+            # Pass both positional args and kwargs so _make_error_output
+            # can find dataset_info regardless of calling convention
+            return self._make_error_output(user_error, args, kwargs)
 
     def _format_user_error(self, error: Exception) -> str:
         """
@@ -187,19 +189,42 @@ class BaseEasyVolcapNode(abc.ABC):
             "If this keeps happening, please report it as a bug."
         )
 
-    def _make_error_output(self, error_msg: str, kwargs: dict) -> Any:
+    def _make_error_output(self, error_msg: str, args: tuple = (), kwargs: dict = None) -> Any:
         """
         Create an error-state output matching the node's RETURN_TYPES.
 
         Tries to pass error info through dataset_info if available,
         and returns error strings for STRING outputs.
+
+        Searches both positional args and kwargs for dataset_info to
+        ensure the original data is preserved even when nodes pass
+        dataset_info as a positional argument.
         """
+        if kwargs is None:
+            kwargs = {}
+
         outputs = []
 
         for i, return_type in enumerate(self.RETURN_TYPES):
             if return_type == DATASET_INFO_TYPE:
-                # Try to get the original dataset_info and add error
-                dataset_info = kwargs.get("dataset_info", {})
+                # Try to recover the original dataset_info from kwargs or positional args
+                dataset_info = kwargs.get("dataset_info")
+
+                # If not found in kwargs, search positional args for a dict
+                # that looks like dataset_info (has typical pipeline keys)
+                if dataset_info is None:
+                    for arg in args:
+                        if isinstance(arg, dict) and (
+                            "dataset_root" in arg
+                            or "dataset_name" in arg
+                            or "errors" in arg
+                        ):
+                            dataset_info = arg
+                            break
+
+                if dataset_info is None:
+                    dataset_info = {}
+
                 if isinstance(dataset_info, dict):
                     updated = dict(dataset_info)
                     updated.setdefault("errors", []).append(error_msg)

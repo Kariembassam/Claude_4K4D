@@ -220,24 +220,28 @@ class FourK4D_Train(BaseEasyVolcapNode):
             ],
         )
 
-        # Check quality gate (only block if it explicitly FAILED)
-        if "quality_gate_passed" in dataset_info:
-            if not dataset_info["quality_gate_passed"]:
-                raise ValueError(
-                    "QUALITY GATE FAILED: Training is blocked because the quality "
-                    "gate check ran and did not pass. This prevents wasting GPU hours "
-                    "on data that may produce poor results.\n\n"
-                    "How to fix:\n"
-                    "1. Fix the issues flagged by the QualityGate node\n"
-                    "2. Or set override_and_proceed=True and type 'I UNDERSTAND' "
-                    "in the QualityGate node to bypass\n\n"
-                    "Common quality issues: blurry frames, poor masks, camera sync problems."
-                )
-        else:
+        # Check quality gate — only block if it was explicitly set to False
+        # by the QualityGate node. If the key is absent or None, it means
+        # the QualityGate node was bypassed or not connected — proceed with warning.
+        qg_value = dataset_info.get("quality_gate_passed")
+        if qg_value is False:
+            raise ValueError(
+                "QUALITY GATE FAILED: Training is blocked because the quality "
+                "gate check ran and did not pass. This prevents wasting GPU hours "
+                "on data that may produce poor results.\n\n"
+                "How to fix:\n"
+                "1. Fix the issues flagged by the QualityGate node\n"
+                "2. Or set override_and_proceed=True and type 'I UNDERSTAND' "
+                "in the QualityGate node to bypass\n\n"
+                "Common quality issues: blurry frames, poor masks, camera sync problems."
+            )
+        elif qg_value is None or "quality_gate_passed" not in dataset_info:
             self._node_logger.warning(
                 "Quality gate was not run (node bypassed or not connected). "
                 "Proceeding without quality validation."
             )
+        else:
+            self._node_logger.info("Quality gate PASSED — proceeding with training.")
 
         dataset_name = dataset_info["dataset_name"]
         dataset_root = dataset_info["dataset_root"]

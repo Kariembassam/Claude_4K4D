@@ -68,9 +68,9 @@ class FourK4D_Render(BaseEasyVolcapNode):
 
         dataset_root = dataset_info["dataset_root"]
         name = dataset_info["dataset_name"]
-        easyvolcap_root = dataset_info.get("easyvolcap_root", "")
-        experiment_name = dataset_info.get("experiment_name", f"4k4d_{name}")
-        config_path = dataset_info.get("config_path", "")
+        easyvolcap_root = dataset_info.get("easyvolcap_root") or ""
+        experiment_name = dataset_info.get("experiment_name") or f"4k4d_{name}"
+        config_path = dataset_info.get("config_path") or ""
 
         runner = self._create_runner()
         render_output_dir = os.path.join(dataset_root, "render_output", render_mode)
@@ -118,7 +118,7 @@ class FourK4D_Render(BaseEasyVolcapNode):
                 timeout_seconds=14400,
             )
 
-            if result.success:
+            if result.success and easyvolcap_root and experiment_name:
                 # Find rendered output
                 result_dir = os.path.join(easyvolcap_root, "data", "result", experiment_name)
                 if os.path.exists(result_dir):
