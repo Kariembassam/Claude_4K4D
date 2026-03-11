@@ -235,8 +235,8 @@ class FourK4D_FrameExtract(BaseEasyVolcapNode):
                 r, c = divmod(i, cols)
                 grid[r*tile_h:(r+1)*tile_h, c*tile_w:(c+1)*tile_w] = img
 
-            # Convert to ComfyUI IMAGE format [B, H, W, C] float32
-            return grid[None, :, :, :].astype(np.float32) / 255.0
+            # Convert to ComfyUI IMAGE format [B, H, W, C] float32 torch tensor
+            return self._numpy_to_comfy_image(grid.astype(np.float32) / 255.0)
 
         except Exception as e:
             self._node_logger.warning(f"Failed to generate preview: {e}")

@@ -227,15 +227,22 @@ class BaseEasyVolcapNode(abc.ABC):
 
         return tuple(outputs)
 
+    @staticmethod
+    def _numpy_to_comfy_image(np_array):
+        """Convert a numpy array to ComfyUI IMAGE format (torch tensor [B,H,W,C] float32)."""
+        import torch
+        if np_array.ndim == 3:
+            np_array = np_array[None, :, :, :]
+        return torch.from_numpy(np_array.astype("float32"))
+
     def _create_error_image(self, error_msg: str):
-        """Create a simple red error image placeholder."""
+        """Create a simple red error image placeholder as a PyTorch tensor."""
         try:
-            import numpy as np
-            # Create a 256x512 red-tinted image with error text
-            img = np.zeros((256, 512, 3), dtype=np.float32)
-            img[:, :, 0] = 0.3  # Red tint
-            # Return as [1, H, W, C] tensor (ComfyUI IMAGE format)
-            return img[None, :, :, :]
+            import torch
+            # ComfyUI IMAGE format: [B, H, W, C] float32 torch tensor
+            img = torch.zeros(1, 256, 512, 3, dtype=torch.float32)
+            img[:, :, :, 0] = 0.3  # Red tint
+            return img
         except Exception:
             return None
 

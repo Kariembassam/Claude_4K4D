@@ -205,7 +205,7 @@ class FourK4D_Render(BaseEasyVolcapNode):
             if frames:
                 img = Image.open(frames[0]).convert("RGB")
                 img = img.resize((640, 360))
-                return np.array(img)[None, :, :, :].astype(np.float32) / 255.0
+                return self._numpy_to_comfy_image(np.array(img).astype(np.float32) / 255.0)
         except Exception:
             pass
         return self._create_error_image("No rendered frames yet")

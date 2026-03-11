@@ -666,7 +666,7 @@ class FourK4D_Train(BaseEasyVolcapNode):
             if files:
                 try:
                     img = np.array(Image.open(files[-1]).convert("RGB")).astype(np.float32) / 255.0
-                    return img[None, :, :, :]  # [1, H, W, C] ComfyUI format
+                    return self._numpy_to_comfy_image(img)
                 except Exception as e:
                     self._node_logger.warning(f"Failed to load preview image: {e}")
 
@@ -674,13 +674,13 @@ class FourK4D_Train(BaseEasyVolcapNode):
         return self._create_placeholder_image("Training complete -- no preview available")
 
     def _create_placeholder_image(self, text: str):
-        """Create a simple placeholder image with text."""
+        """Create a simple placeholder image with text as a PyTorch tensor."""
         try:
-            import numpy as np
-            img = np.zeros((256, 512, 3), dtype=np.float32)
-            img[:, :, 1] = 0.15  # Subtle green tint for success
-            img[:, :, 2] = 0.15
-            return img[None, :, :, :]
+            import torch
+            img = torch.zeros(1, 256, 512, 3, dtype=torch.float32)
+            img[:, :, :, 1] = 0.15  # Subtle green tint for success
+            img[:, :, :, 2] = 0.15
+            return img
         except Exception:
             return self._create_error_image(text)
 

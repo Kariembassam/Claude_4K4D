@@ -295,6 +295,6 @@ class FourK4D_MaskGeneration(BaseEasyVolcapNode):
                 return self._create_error_image("No mask preview available")
 
             grid = np.concatenate(images, axis=1)
-            return grid[None, :, :, :].astype(np.float32) / 255.0
+            return self._numpy_to_comfy_image(grid.astype(np.float32) / 255.0)
         except Exception:
             return self._create_error_image("Preview generation failed")
