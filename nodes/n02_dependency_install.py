@@ -244,11 +244,42 @@ class FourK4D_DependencyInstall(BaseEasyVolcapNode):
         if result.success:
             log_lines.append("  COLMAP already installed")
         else:
-            log_lines.append("  Installing COLMAP via apt...")
-            runner.run_simple(
+            log_lines.append("  Installing COLMAP...")
+            # Try apt-get with sudo first (RunPod), then without, then conda/pip
+            colmap_installed = False
+            for cmd in [
+                ["sudo", "apt-get", "update"],
+            ]:
+                runner.run_simple(cmd, timeout=60)
+
+            for cmd in [
+                ["sudo", "apt-get", "install", "-y", "colmap"],
                 ["apt-get", "install", "-y", "colmap"],
-                timeout=300,
-            )
+                [sys.executable, "-m", "pip", "install", "colmap"],
+            ]:
+                result = runner.run_simple(cmd, timeout=300)
+                if result.success:
+                    colmap_installed = True
+                    break
+
+            # Verify colmap is actually available
+            if not colmap_installed:
+                # Try building from conda-forge as last resort
+                result = runner.run_simple(
+                    [sys.executable, "-m", "pip", "install", "pycolmap"],
+                    timeout=300,
+                )
+                if result.success:
+                    log_lines.append("  Installed pycolmap (Python bindings)")
+                    colmap_installed = True
+
+            if colmap_installed:
+                log_lines.append("  COLMAP: OK")
+            else:
+                log_lines.append(
+                    "  COLMAP: FAILED — Install manually with: "
+                    "sudo apt-get update && sudo apt-get install -y colmap"
+                )
 
         # Step 12: RobustVideoMatting
         log_lines.append("\nSTEP 12: Installing RobustVideoMatting...")
