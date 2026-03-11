@@ -127,12 +127,18 @@ class FourK4D_Render(BaseEasyVolcapNode):
                     "configs/specs/ibr.yaml",
                 ])
 
+            # Determine camera count to prevent view_sample IndexError
+            camera_count = dataset_info.get("camera_count", 5)
+
             extra_args = {
                 "exp_name": experiment_name,
                 "dataloader_cfg.dataset_cfg.data_root": dataset_root,
                 "val_dataloader_cfg.dataset_cfg.data_root": dataset_root,
                 "val_dataloader_cfg.dataset_cfg.focal_ratio": str(focal_ratio),
                 "val_dataloader_cfg.dataset_cfg.n_render_views": str(n_render_views),
+                # Limit view_sample to valid camera indices [begin, end, step]
+                # This prevents IndexError when spiral/eval configs assume more cameras
+                "val_dataloader_cfg.dataset_cfg.view_sample": f"[0,{camera_count},1]",
             }
 
             cmd = self.build_evc_command("evc-test", configs, extra_args)
@@ -149,16 +155,33 @@ class FourK4D_Render(BaseEasyVolcapNode):
                 timeout_seconds=14400,
             )
 
-            if result.success and easyvolcap_root and experiment_name:
-                # Find rendered output
-                result_dir = os.path.join(easyvolcap_root, "data", "result", experiment_name)
-                if os.path.exists(result_dir):
-                    # Look for rendered frames
-                    for root, dirs, files in os.walk(result_dir):
-                        for f in files:
+            if result.success and experiment_name:
+                # Find rendered output — evc-test saves to data/result/{exp_name}/
+                # relative to CWD (the 4K4D repo dir), not EasyVolcap
+                search_dirs = []
+                if render_cwd:
+                    search_dirs.append(os.path.join(render_cwd, "data", "result", experiment_name))
+                if easyvolcap_root:
+                    search_dirs.append(os.path.join(easyvolcap_root, "data", "result", experiment_name))
+
+                for result_dir in search_dirs:
+                    if not os.path.exists(result_dir):
+                        continue
+                    self._node_logger.info(f"Searching for rendered frames in: {result_dir}")
+                    # Look for rendered frames (RENDER subdir or direct)
+                    for subdir_name in ["RENDER", "render", ""]:
+                        check_dir = os.path.join(result_dir, subdir_name) if subdir_name else result_dir
+                        if not os.path.isdir(check_dir):
+                            continue
+                        for f in os.listdir(check_dir):
                             if f.endswith(".jpg") or f.endswith(".png"):
-                                frames_dir = root
+                                frames_dir = check_dir
+                                self._node_logger.info(f"Found rendered frames in: {frames_dir}")
                                 break
+                        if frames_dir != os.path.join(render_output_dir, "frames"):
+                            break
+                    if frames_dir != os.path.join(render_output_dir, "frames"):
+                        break
 
         # Package output in requested formats
         if os.path.exists(frames_dir) and os.listdir(frames_dir):
