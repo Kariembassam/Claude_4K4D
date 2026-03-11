@@ -209,20 +209,37 @@ class FourK4D_Render(BaseEasyVolcapNode):
             preview,
         )
 
+    def _get_render_frames(self, frames_dir):
+        """Get sorted render frames, excluding _error and _gt variants."""
+        all_frames = sorted(Path(frames_dir).glob("*.jpg")) + sorted(Path(frames_dir).glob("*.png"))
+        # EasyVolcap outputs frame*_camera*.png plus _error.png and _gt.png variants
+        # Filter to only the main render images
+        render_frames = [
+            f for f in all_frames
+            if "_error" not in f.stem and "_gt" not in f.stem
+        ]
+        return render_frames if render_frames else all_frames
+
+    def _create_concat_file(self, frames, output_dir):
+        """Create ffmpeg concat file for non-sequential frame names."""
+        concat_path = os.path.join(output_dir, "_ffmpeg_concat.txt")
+        with open(concat_path, "w") as f:
+            for frame in frames:
+                f.write(f"file '{frame}'\nduration 0.0333\n")
+        return concat_path
+
     def _encode_h264(self, frames_dir, output_path, crf, runner):
         """Encode frames to H.264 MP4."""
-        # Find frame pattern
-        frames = sorted(Path(frames_dir).glob("*.jpg")) + sorted(Path(frames_dir).glob("*.png"))
+        frames = self._get_render_frames(frames_dir)
         if not frames:
             return
 
-        ext = frames[0].suffix
-        pattern = os.path.join(frames_dir, f"%06d{ext}")
-
+        # Use concat demuxer for non-sequential filenames (EasyVolcap convention)
+        concat_file = self._create_concat_file(frames, os.path.dirname(output_path))
         runner.run_simple([
             "ffmpeg", "-y",
-            "-framerate", "30",
-            "-i", pattern,
+            "-f", "concat", "-safe", "0",
+            "-i", concat_file,
             "-c:v", "libx264",
             "-crf", str(crf),
             "-pix_fmt", "yuv420p",
@@ -231,17 +248,15 @@ class FourK4D_Render(BaseEasyVolcapNode):
 
     def _encode_prores(self, frames_dir, output_path, runner):
         """Encode frames to ProRes 4444."""
-        frames = sorted(Path(frames_dir).glob("*.jpg")) + sorted(Path(frames_dir).glob("*.png"))
+        frames = self._get_render_frames(frames_dir)
         if not frames:
             return
 
-        ext = frames[0].suffix
-        pattern = os.path.join(frames_dir, f"%06d{ext}")
-
+        concat_file = self._create_concat_file(frames, os.path.dirname(output_path))
         runner.run_simple([
             "ffmpeg", "-y",
-            "-framerate", "30",
-            "-i", pattern,
+            "-f", "concat", "-safe", "0",
+            "-i", concat_file,
             "-c:v", "prores_ks",
             "-profile:v", "4444",
             "-pix_fmt", "yuva444p10le",
