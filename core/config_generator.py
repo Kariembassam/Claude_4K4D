@@ -150,9 +150,13 @@ class ConfigGenerator:
             "background_mode": dataset_info.get("background_mode", "foreground_only"),
             "training_mode": params.get("training_mode", "full_sequence"),
             "camera_count": dataset_info.get("camera_count", 5),
+            "images_dir": "images",
+            "ratio": DEFAULTS.get("resolution_scale", 0.5),
             "view_sample": f"0,{dataset_info.get('camera_count', 5)},1",
             "frame_sample": f"0,{dataset_info.get('sequence_length', 1)},1",
             "focal_ratio": params.get("focal_ratio", DEFAULTS["focal_ratio"]),
+            "force_sparse_view": dataset_info.get("camera_count", 5) < 8,
+            "bounds": dataset_info.get("bounds", "[[-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]]"),
         }
 
         return self._render_template("experiment.yaml.j2", context, output_path)

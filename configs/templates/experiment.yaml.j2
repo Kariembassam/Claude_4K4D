@@ -9,13 +9,25 @@ exp_name: {{ experiment_name }}
 dataloader_cfg:
     dataset_cfg:
         data_root: {{ data_root }}
-        view_sample: [{{ view_sample }}]
+        images_dir: {{ images_dir | default('images') }}
+        view_sample: [0, null, 1]
         frame_sample: [{{ frame_sample }}]
+        ratio: {{ ratio | default(0.5) }}
+        force_sparse_view: {{ force_sparse_view | default('False') }}
+        bounds: {{ bounds | default('[[-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]]') }}
+        intersect_camera_bounds: {{ intersect_camera_bounds | default('False') }}
+        use_vhulls: {{ use_vhulls | default('False') }}
 
 val_dataloader_cfg:
     dataset_cfg:
         data_root: {{ data_root }}
+        images_dir: {{ images_dir | default('images') }}
+        ratio: {{ ratio | default(0.5) }}
         focal_ratio: {{ focal_ratio | default(0.5) }}
+        force_sparse_view: {{ force_sparse_view | default('False') }}
+        bounds: {{ bounds | default('[[-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]]') }}
+        intersect_camera_bounds: {{ intersect_camera_bounds | default('False') }}
+        use_vhulls: {{ use_vhulls | default('False') }}
 
 {% if training_mode == 'preview_static' %}
 # Preview static mode — single frame, fast validation
