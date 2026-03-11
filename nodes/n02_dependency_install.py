@@ -292,6 +292,27 @@ class FourK4D_DependencyInstall(BaseEasyVolcapNode):
             )
         log_lines.append(f"  {'OK' if result.success else 'FAILED'}")
 
+        # Step 12b: Patch pyntcloud for pandas >= 2.0 compatibility
+        # pyntcloud 0.3.x uses df.dtypes[i] which does label-based lookup
+        # in pandas 2.0+, causing KeyError. Fix: use df.dtypes.iloc[i]
+        log_lines.append("\nSTEP 12b: Patching pyntcloud for pandas compatibility...")
+        patch_code = (
+            "import pyntcloud.io.ply as m, inspect, pathlib; "
+            "src = inspect.getfile(m); "
+            "txt = pathlib.Path(src).read_text(); "
+            "old = 'property_formats[str(df.dtypes[i])[0]]'; "
+            "new = 'property_formats[str(df.dtypes.iloc[i])[0]]'; "
+            "("
+            "  pathlib.Path(src).write_text(txt.replace(old, new)), "
+            "  print('Patched' if old in txt else 'Already patched')"
+            ")"
+        )
+        result = runner.run_simple(
+            [sys.executable, "-c", patch_code],
+            timeout=30,
+        )
+        log_lines.append(f"  pyntcloud patch: {'OK' if result.success else 'FAILED'}")
+
         # Step 13: Verify installations
         log_lines.append("\nSTEP 13: Verifying installations...")
         verifications = {
