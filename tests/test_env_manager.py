@@ -115,7 +115,7 @@ class TestGpuInfo:
         mock_torch.version.cuda = "12.1"
 
         mock_props = MagicMock()
-        mock_props.total_mem = 24 * (1024 ** 3)  # 24 GB
+        mock_props.total_memory = 24 * (1024 ** 3)  # 24 GB
         mock_torch.cuda.get_device_properties.return_value = mock_props
         mock_torch.cuda.get_device_capability.return_value = (8, 9)
 

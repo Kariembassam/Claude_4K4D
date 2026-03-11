@@ -181,7 +181,9 @@ class EnvManager:
                 info["cuda_available"] = True
                 info["gpu_name"] = torch.cuda.get_device_name(0)
                 props = torch.cuda.get_device_properties(0)
-                info["gpu_memory_gb"] = round(props.total_mem / (1024**3), 1)
+                info["gpu_memory_gb"] = round(
+                    getattr(props, 'total_memory', getattr(props, 'total_mem', 0)) / (1024**3), 1
+                )
                 info["cuda_version"] = torch.version.cuda or "N/A"
                 major, minor = torch.cuda.get_device_capability(0)
                 info["gpu_arch"] = f"{major}.{minor}"
