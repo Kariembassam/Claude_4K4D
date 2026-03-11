@@ -240,6 +240,7 @@ class FourK4D_DependencyInstall(BaseEasyVolcapNode):
             "yacs", "plyfile", "smplx", "h5py",
             "lpips", "kornia", "einops",
             "pytorch-msssim", "mediapy",
+            "cuda-python",  # CUDA-GL interop for headless rendering
         ]
         for pkg in aux_packages:
             result = runner.run_simple(

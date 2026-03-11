@@ -417,9 +417,18 @@ class FourK4D_Train(BaseEasyVolcapNode):
                 fourk4d_root = candidate
         cwd = fourk4d_root if fourk4d_root else (easyvolcap_root if easyvolcap_root and Path(easyvolcap_root).is_dir() else None)
 
+        # Headless rendering: EasyVolcap's R4DV model uses OpenGL for
+        # point rasterization. On headless servers (RunPod, etc.) we need
+        # EGL as the OpenGL platform backend. Also ensure cuda-python is
+        # importable for CUDA-GL interop in gl_utils.py.
+        train_env = {
+            "PYOPENGL_PLATFORM": "egl",
+        }
+
         result = runner.run(
             cmd=cmd,
             cwd=cwd,
+            env=train_env,
             progress_parser=combined_parser,
             timeout_seconds=timeout_sec,
             unique_id=unique_id,
