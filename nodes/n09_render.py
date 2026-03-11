@@ -104,6 +104,8 @@ class FourK4D_Render(BaseEasyVolcapNode):
 
             extra_args = {
                 "exp_name": experiment_name,
+                "dataloader_cfg.dataset_cfg.data_root": dataset_root,
+                "val_dataloader_cfg.dataset_cfg.data_root": dataset_root,
                 "val_dataloader_cfg.dataset_cfg.focal_ratio": str(focal_ratio),
                 "val_dataloader_cfg.dataset_cfg.n_render_views": str(n_render_views),
             }

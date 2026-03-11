@@ -96,6 +96,10 @@ class FourK4D_SuperCharge(BaseEasyVolcapNode):
             if config_path and os.path.exists(str(config_path)):
                 cmd.extend(["-c", f"{config_path},configs/specs/super.yaml"])
 
+            # Ensure data_root is passed as CLI override
+            cmd.append(f"dataloader_cfg.dataset_cfg.data_root={dataset_root}")
+            cmd.append(f"val_dataloader_cfg.dataset_cfg.data_root={dataset_root}")
+
             result = runner.run(
                 cmd,
                 cwd=easyvolcap_root or deps_dir,
