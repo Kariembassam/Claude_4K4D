@@ -220,18 +220,23 @@ class FourK4D_Train(BaseEasyVolcapNode):
             ],
         )
 
-        # CRITICAL: Check quality gate
-        quality_gate_passed = dataset_info.get("quality_gate_passed", False)
-        if not quality_gate_passed:
-            raise ValueError(
-                "QUALITY GATE NOT PASSED: Training is blocked because the quality "
-                "gate check has not been passed. This prevents wasting GPU hours "
-                "on data that may produce poor results.\n\n"
-                "How to fix:\n"
-                "1. Connect and run the QualityGate node before this Train node\n"
-                "2. Fix any issues flagged by the quality checks\n"
-                "3. If you want to bypass, set force_pass=True on the QualityGate node\n\n"
-                "Common quality issues: blurry frames, poor masks, camera sync problems."
+        # Check quality gate (only block if it explicitly FAILED)
+        if "quality_gate_passed" in dataset_info:
+            if not dataset_info["quality_gate_passed"]:
+                raise ValueError(
+                    "QUALITY GATE FAILED: Training is blocked because the quality "
+                    "gate check ran and did not pass. This prevents wasting GPU hours "
+                    "on data that may produce poor results.\n\n"
+                    "How to fix:\n"
+                    "1. Fix the issues flagged by the QualityGate node\n"
+                    "2. Or set override_and_proceed=True and type 'I UNDERSTAND' "
+                    "in the QualityGate node to bypass\n\n"
+                    "Common quality issues: blurry frames, poor masks, camera sync problems."
+                )
+        else:
+            self._node_logger.warning(
+                "Quality gate was not run (node bypassed or not connected). "
+                "Proceeding without quality validation."
             )
 
         dataset_name = dataset_info["dataset_name"]
