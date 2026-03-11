@@ -260,6 +260,13 @@ class FourK4D_Train(BaseEasyVolcapNode):
                 f"Full training mode: {effective_iterations} iterations"
             )
 
+        # ── Step 2b: Ensure masks and vhulls exist ─────────────────────────
+        # The 4K4D pipeline requires masks and pre-computed vhull PLY files.
+        # If they don't exist yet (e.g. user skipped mask/vhull nodes),
+        # auto-generate placeholder data so training can proceed.
+        self._ensure_masks_exist(dataset_root, dataset_info)
+        self._ensure_vhulls_exist(dataset_root, dataset_info)
+
         # ── Step 3: Generate experiment config ───────────────────────────────
         experiment_name = f"4k4d_{dataset_name}_{training_mode}"
         training_params = {
@@ -346,17 +353,23 @@ class FourK4D_Train(BaseEasyVolcapNode):
         )
 
         # CLI args take highest priority over config YAML values.
-        # exp_name and data_root MUST be CLI args to override the base config
-        # (which has hardcoded dataset paths for a reference dataset).
+        # These MUST be CLI args to ensure they override everything in the
+        # config chain, including any defaults from base.yaml/r4dv.yaml.
         extra_args = {
             "exp_name": experiment_name,
             "dataloader_cfg.dataset_cfg.data_root": dataset_root,
             "val_dataloader_cfg.dataset_cfg.data_root": dataset_root,
+            # CRITICAL: IBR dataset requires view_sample=[0,None,1].
+            # Camera selection happens at sampler level, not dataset level.
+            "dataloader_cfg.dataset_cfg.view_sample": "[0,None,1]",
+            "val_dataloader_cfg.dataset_cfg.view_sample": "[0,None,1]",
+            # Prevent NaN bounds from camera frustum intersection
+            "dataloader_cfg.dataset_cfg.intersect_camera_bounds": "False",
+            "val_dataloader_cfg.dataset_cfg.intersect_camera_bounds": "False",
+            # Prevent runtime vhull computation failures with placeholder masks
+            "dataloader_cfg.dataset_cfg.use_vhulls": "False",
+            "val_dataloader_cfg.dataset_cfg.use_vhulls": "False",
         }
-        if view_sample_range and view_sample_range != "0,None,1":
-            extra_args["val_dataloader_cfg.dataset_cfg.view_sample"] = (
-                f"[{view_sample_range}]"
-            )
         if frame_sample_range and frame_sample_range != "0,None,1":
             extra_args["val_dataloader_cfg.dataset_cfg.frame_sample"] = (
                 f"[{frame_sample_range}]"
@@ -514,26 +527,20 @@ class FourK4D_Train(BaseEasyVolcapNode):
         Build the config chain for evc-train.
 
         EasyVolcap chains configs with commas: base,dataset,experiment.
+
+        IMPORTANT: We use base.yaml + r4dv.yaml as the model architecture base,
+        NOT the renbody-specific 4k4d_0013_01_r4.yaml which pulls in dataset-
+        specific configs (ratio.yaml, 0013_01_obj.yaml) that conflict with
+        custom datasets. Our experiment YAML provides all dataset settings.
         """
         configs = []
 
-        # Base 4K4D config (from 4K4D repo's config directory)
-        configs.append("configs/exps/4k4d/4k4d_0013_01_r4.yaml")
+        # Generic model architecture configs (no dataset-specific settings)
+        configs.append("configs/base.yaml")
+        configs.append("configs/models/r4dv.yaml")
 
-        # Dataset-specific config
-        dataset_config = dataset_info.get("config_path")
-        if dataset_config and Path(dataset_config).exists():
-            configs.append(dataset_config)
-
-        # Experiment config (generated above)
+        # Experiment config (generated above — provides ALL dataset settings)
         configs.append(exp_config_path)
-
-        # Sparse view config overlay
-        if force_sparse_view and dataset_info.get("camera_count", 5) < 8:
-            sparse_cfg = "configs/exps/4k4d/4k4d_tiny_sparse.yaml"
-            evc_root = dataset_info.get("easyvolcap_root", "")
-            if evc_root and Path(evc_root, sparse_cfg).exists():
-                configs.append(sparse_cfg)
 
         # Background model config
         if background_model == "ngp_background":
@@ -543,6 +550,174 @@ class FourK4D_Train(BaseEasyVolcapNode):
                 configs.append(bg_cfg)
 
         return configs
+
+    def _ensure_masks_exist(self, dataset_root: str, dataset_info: dict) -> None:
+        """
+        Ensure mask images exist for all cameras and frames.
+
+        If masks are missing, create white (all-foreground) placeholder masks.
+        These are required by the r4dv model even when use_masks=False in config,
+        because mask.yaml may still be loaded via parent configs.
+        """
+        try:
+            from PIL import Image
+        except ImportError:
+            self._node_logger.warning("PIL not available, skipping mask auto-generation")
+            return
+
+        images_dir = Path(dataset_root) / "images"
+        mask_dir = Path(dataset_root) / "mask"
+
+        if not images_dir.exists():
+            return
+
+        camera_dirs = sorted([d for d in images_dir.iterdir() if d.is_dir()])
+        if not camera_dirs:
+            return
+
+        masks_needed = False
+        for cam_dir in camera_dirs:
+            cam_mask_dir = mask_dir / cam_dir.name
+            if not cam_mask_dir.exists():
+                masks_needed = True
+                break
+            # Check if at least one mask file exists
+            mask_files = list(cam_mask_dir.glob("*.png"))
+            if not mask_files:
+                masks_needed = True
+                break
+
+        if not masks_needed:
+            self._node_logger.info("Masks already exist, skipping auto-generation")
+            return
+
+        self._node_logger.info("Auto-generating white placeholder masks...")
+        total_created = 0
+
+        for cam_dir in camera_dirs:
+            cam_mask_dir = mask_dir / cam_dir.name
+            cam_mask_dir.mkdir(parents=True, exist_ok=True)
+
+            # Get image files to determine resolution and count
+            img_files = sorted(
+                [f for f in cam_dir.iterdir()
+                 if f.suffix.lower() in ('.jpg', '.jpeg', '.png')]
+            )
+
+            for img_file in img_files:
+                mask_file = cam_mask_dir / f"{img_file.stem}.png"
+                if mask_file.exists():
+                    continue
+
+                # Read image to get dimensions
+                try:
+                    with Image.open(img_file) as img:
+                        w, h = img.size
+                except Exception:
+                    w, h = 960, 540  # Fallback resolution
+
+                # Create white mask (all foreground)
+                mask_img = Image.new('L', (w, h), 255)
+                mask_img.save(str(mask_file))
+                total_created += 1
+
+        if total_created > 0:
+            self._node_logger.info(f"Created {total_created} white placeholder masks")
+
+    def _ensure_vhulls_exist(self, dataset_root: str, dataset_info: dict) -> None:
+        """
+        Ensure pre-computed PLY point clouds exist in the vhulls/ directory.
+
+        The 4K4D PointPlanesSampler requires PLY files to initialize the
+        4D Gaussian representation. If they don't exist, generate synthetic
+        point clouds with random points within the scene bounds.
+        """
+        import struct
+
+        vhulls_dir = Path(dataset_root) / "vhulls"
+        images_dir = Path(dataset_root) / "images"
+
+        if not images_dir.exists():
+            return
+
+        # Determine frame count from first camera directory
+        camera_dirs = sorted([d for d in images_dir.iterdir() if d.is_dir()])
+        if not camera_dirs:
+            return
+
+        frame_count = len(list(camera_dirs[0].glob("*.jpg"))) + len(list(camera_dirs[0].glob("*.png")))
+        if frame_count == 0:
+            return
+
+        # Check if vhulls already exist
+        if vhulls_dir.exists():
+            existing_plys = list(vhulls_dir.glob("*.ply"))
+            if len(existing_plys) >= frame_count:
+                self._node_logger.info(
+                    f"Vhulls already exist ({len(existing_plys)} PLY files), skipping"
+                )
+                return
+
+        self._node_logger.info(
+            f"Auto-generating {frame_count} synthetic vhull PLY files..."
+        )
+        vhulls_dir.mkdir(parents=True, exist_ok=True)
+
+        # Parse bounds from dataset_info
+        bounds_str = dataset_info.get("bounds", "[[-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]]")
+        try:
+            import json
+            bounds = json.loads(bounds_str.replace("'", '"'))
+            bmin = [float(x) for x in bounds[0]]
+            bmax = [float(x) for x in bounds[1]]
+        except Exception:
+            bmin, bmax = [-2.0, -2.0, -2.0], [2.0, 2.0, 2.0]
+
+        # Scale bounds inward to keep points in center
+        margin = 0.2
+        bmin_inner = [b + (bmax[i] - b) * margin for i, b in enumerate(bmin)]
+        bmax_inner = [b - (b - bmin[i]) * margin for i, b in enumerate(bmax)]
+
+        num_points = 5000
+
+        import random
+        random.seed(42)
+
+        for frame_idx in range(frame_count):
+            ply_path = vhulls_dir / f"{frame_idx:06d}.ply"
+            if ply_path.exists():
+                continue
+
+            # Generate random points within bounds
+            points = []
+            for _ in range(num_points):
+                x = random.uniform(bmin_inner[0], bmax_inner[0])
+                y = random.uniform(bmin_inner[1], bmax_inner[1])
+                z = random.uniform(bmin_inner[2], bmax_inner[2])
+                r, g, b = random.randint(100, 200), random.randint(100, 200), random.randint(100, 200)
+                points.append((x, y, z, r, g, b))
+
+            # Write binary little-endian PLY
+            header = (
+                "ply\n"
+                "format binary_little_endian 1.0\n"
+                f"element vertex {num_points}\n"
+                "property float x\n"
+                "property float y\n"
+                "property float z\n"
+                "property uchar red\n"
+                "property uchar green\n"
+                "property uchar blue\n"
+                "end_header\n"
+            )
+
+            with open(ply_path, 'wb') as f:
+                f.write(header.encode('ascii'))
+                for pt in points:
+                    f.write(struct.pack('<fff', pt[0], pt[1], pt[2]))
+                    f.write(struct.pack('<BBB', pt[3], pt[4], pt[5]))
+
+        self._node_logger.info(f"Created {frame_count} synthetic vhull PLY files in {vhulls_dir}")
 
     def _build_fallback_config(
         self,
@@ -558,6 +733,7 @@ class FourK4D_Train(BaseEasyVolcapNode):
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / f"{experiment_name}_exp.yaml"
 
+        seq_len = dataset_info.get("sequence_length", 1)
         lines = [
             "# Auto-generated by ComfyUI-4K4D (fallback mode)",
             f"# Experiment: {experiment_name}",
@@ -565,18 +741,37 @@ class FourK4D_Train(BaseEasyVolcapNode):
             f"exp_name: {experiment_name}",
             "",
             "runner_cfg:",
+            "    epochs: 1",
             f"    ep_iter: {training_params.get('max_iterations', 200)}",
-            f"    save_ep: {training_params.get('checkpoint_interval', 100)}",
-            f"    save_latest_ep: {training_params.get('checkpoint_interval', 100)}",
-            f"    eval_ep: {training_params.get('checkpoint_interval', 100)}",
+            "    save_ep: 1",
+            "    save_latest_ep: 1",
+            "    eval_ep: 1",
             "",
             "dataloader_cfg:",
             "    dataset_cfg:",
             f"        data_root: {dataset_root}",
+            "        images_dir: images",
+            "        view_sample: [0, null, 1]",
+            f"        frame_sample: [0, {seq_len}, 1]",
+            "        ratio: 0.5",
+            "        intersect_camera_bounds: False",
+            "        use_vhulls: False",
+            "        bounds: [[-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]]",
             "",
             "val_dataloader_cfg:",
             "    dataset_cfg:",
             f"        data_root: {dataset_root}",
+            "        images_dir: images",
+            "        view_sample: [0, null, 1]",
+            "        ratio: 0.5",
+            "        focal_ratio: 0.5",
+            "        intersect_camera_bounds: False",
+            "        use_vhulls: False",
+            "        bounds: [[-5.0, -5.0, -5.0], [5.0, 5.0, 5.0]]",
+            "",
+            "model_cfg:",
+            "    sampler_cfg:",
+            "        bg_brightness: 0.0",
         ]
 
         config_path.write_text("\n".join(lines))

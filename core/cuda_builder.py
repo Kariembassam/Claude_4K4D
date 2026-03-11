@@ -83,7 +83,13 @@ class CudaBuilder:
     def compile_tinycudann(self) -> dict:
         """
         Install tinycudann (tiny-cuda-nn).
-        Tries pre-built wheel first, falls back to source compilation.
+
+        Build requirements:
+        - setuptools (for pkg_resources, missing in Python 3.12 build isolation)
+        - cuda-nvrtc-dev (for nvrtc.h header required by RTC kernel compilation)
+
+        Tries pre-built wheel first, falls back to source compilation
+        with --no-build-isolation to use system setuptools.
 
         Returns:
             dict with keys: success (bool), message (str)
@@ -104,11 +110,49 @@ class CudaBuilder:
             self.mark_compiled(name)
             return {"success": True, "message": "Installed from wheel"}
 
-        # Fallback: compile from source
-        logger.info("Pre-built wheel failed, compiling from source...")
+        # Ensure build prerequisites are available
+        logger.info("Pre-built wheel failed, ensuring build prerequisites...")
+
+        # 1. setuptools (provides pkg_resources needed by tinycudann setup.py)
+        self.runner.run_simple(["pip", "install", "setuptools"], timeout=60)
+
+        # 2. CUDA development headers (nvrtc.h, cusparse.h, cublas.h, etc.)
+        # RunPod containers often have a minimal CUDA install without dev headers.
+        cuda_ver = self.env.gpu_info.get("cuda_version", "12.4").replace(".", "-")
+        cuda_major_minor = cuda_ver if "-" in cuda_ver else f"{cuda_ver[:2]}-{cuda_ver[2:]}" if len(cuda_ver) >= 3 else cuda_ver
+        cuda_dev_packages = [
+            f"cuda-nvrtc-dev-{cuda_major_minor}",
+            f"libcusparse-dev-{cuda_major_minor}",
+            f"libcublas-dev-{cuda_major_minor}",
+            f"libcusolver-dev-{cuda_major_minor}",
+            f"libcurand-dev-{cuda_major_minor}",
+            f"cuda-cudart-dev-{cuda_major_minor}",
+        ]
+        nvrtc_result = self.runner.run_simple(
+            ["apt-get", "install", "-y", "-qq"] + cuda_dev_packages,
+            timeout=180,
+        )
+        if not nvrtc_result.success:
+            logger.warning("Could not install CUDA dev packages, trying apt-get update first...")
+            self.runner.run_simple(["apt-get", "update", "-qq"], timeout=120)
+            self.runner.run_simple(
+                ["apt-get", "install", "-y", "-qq"] + cuda_dev_packages,
+                timeout=180,
+            )
+
+        # Compile from source with --no-build-isolation to use system setuptools
+        logger.info("Compiling tinycudann from source (this may take 5-10 minutes)...")
+        build_env = self.env.get_cuda_env_vars()
+        # Set CUDA architecture for the target GPU
+        gpu_arch = self.env.gpu_info.get("cuda_arch", "89")
+        build_env["TCNN_CUDA_ARCHITECTURES"] = str(gpu_arch)
+
         result = self.runner.run_simple(
-            ["pip", "install", "git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch"],
-            env=self.env.get_cuda_env_vars(),
+            [
+                "pip", "install", "--no-build-isolation",
+                "git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch",
+            ],
+            env=build_env,
             timeout=900,
         )
 
@@ -119,8 +163,11 @@ class CudaBuilder:
         return {
             "success": False,
             "message": (
-                "Failed to install tinycudann. This is a common issue on some systems. "
-                "The pipeline will still work but rendering quality may be reduced. "
+                "Failed to install tinycudann. This is required for the r4dv model's "
+                "hash encoding backbone. Common causes:\n"
+                "- Missing CUDA nvrtc headers (cuda-nvrtc-dev)\n"
+                "- Missing setuptools (pkg_resources)\n"
+                "- Incompatible CUDA/PyTorch versions\n"
                 f"Error: {result.error_summary[:500]}"
             ),
         }
