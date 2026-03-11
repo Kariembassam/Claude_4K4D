@@ -815,10 +815,22 @@ class FourK4D_Train(BaseEasyVolcapNode):
         """
         Locate the trained model checkpoint file.
 
-        EasyVolcap saves checkpoints to data/trained_model/{exp_name}/latest.npz
-        or data/record/{exp_name}/latest.npz depending on version.
+        EasyVolcap saves checkpoints to data/trained_model/{exp_name}/
+        as numbered .npz files (e.g. 199.npz, 1599.npz) or latest.pt.
+        The save location is relative to the CWD where evc-train ran,
+        which is the 4K4D repo directory.
         """
         search_dirs = []
+
+        # evc-train runs from the 4K4D repo dir — check there first
+        if easyvolcap_root:
+            fourk4d_root = Path(easyvolcap_root).parent / "4K4D"
+            if fourk4d_root.is_dir():
+                search_dirs.extend([
+                    fourk4d_root / "data" / "trained_model" / experiment_name,
+                    fourk4d_root / "data" / "record" / experiment_name,
+                    fourk4d_root / "data" / "result" / experiment_name,
+                ])
 
         # Common EasyVolcap output locations
         if easyvolcap_root:
@@ -834,7 +846,8 @@ class FourK4D_Train(BaseEasyVolcapNode):
             Path(dataset_root) / "output" / experiment_name,
         ])
 
-        # Search for checkpoint files
+        # Search for checkpoint files — EasyVolcap uses numbered .npz files
+        # (e.g. 199.npz for iteration 199) and latest.pt for the full model
         checkpoint_names = [
             "latest.npz", "latest.pt", "latest.pth",
             "model.npz", "model.pt", "model.pth",
@@ -843,11 +856,26 @@ class FourK4D_Train(BaseEasyVolcapNode):
         for search_dir in search_dirs:
             if not search_dir.exists():
                 continue
+
+            # Check named checkpoints
             for ckpt_name in checkpoint_names:
                 candidate = search_dir / ckpt_name
                 if candidate.exists():
                     self._node_logger.info(f"Found model at: {candidate}")
                     return str(candidate)
+
+            # Check for numbered .npz/.pt files (EasyVolcap iteration saves)
+            numbered_files = sorted(
+                [f for f in search_dir.iterdir()
+                 if f.is_file() and f.suffix in (".npz", ".pt", ".pth")
+                 and f.stem.replace("-", "").isdigit()],
+                key=lambda f: int(f.stem.replace("-", "")),
+                reverse=True,  # highest iteration first
+            )
+            if numbered_files:
+                self._node_logger.info(f"Found model at: {numbered_files[0]}")
+                return str(numbered_files[0])
+
             # Also search recursively one level deep
             for subdir in search_dir.iterdir():
                 if subdir.is_dir():
