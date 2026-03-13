@@ -130,6 +130,15 @@ class FourK4D_Render(BaseEasyVolcapNode):
             # Determine camera count to prevent view_sample IndexError
             camera_count = dataset_info.get("camera_count", 5)
 
+            # Determine sequence length for temporal rendering
+            sequence_length = dataset_info.get("sequence_length", 1)
+
+            # Parse frame_sample — use full sequence if default "0,None,1"
+            if frame_sample == "0,None,1" and sequence_length > 1:
+                resolved_frame_sample = f"[0,{sequence_length},1]"
+            else:
+                resolved_frame_sample = f"[{frame_sample}]"
+
             extra_args = {
                 "exp_name": experiment_name,
                 "dataloader_cfg.dataset_cfg.data_root": dataset_root,
@@ -139,6 +148,9 @@ class FourK4D_Render(BaseEasyVolcapNode):
                 # Limit view_sample to valid camera indices [begin, end, step]
                 # This prevents IndexError when spiral/eval configs assume more cameras
                 "val_dataloader_cfg.dataset_cfg.view_sample": f"[0,{camera_count},1]",
+                # CRITICAL: Include all timesteps for temporal rendering
+                # Without this, only frame 0 is rendered (static output)
+                "val_dataloader_cfg.dataset_cfg.frame_sample": resolved_frame_sample,
             }
 
             cmd = self.build_evc_command("evc-test", configs, extra_args)

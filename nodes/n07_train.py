@@ -371,6 +371,9 @@ class FourK4D_Train(BaseEasyVolcapNode):
             "val_dataloader_cfg.dataset_cfg.use_vhulls": "False",
         }
         if frame_sample_range and frame_sample_range != "0,None,1":
+            extra_args["dataloader_cfg.dataset_cfg.frame_sample"] = (
+                f"[{frame_sample_range}]"
+            )
             extra_args["val_dataloader_cfg.dataset_cfg.frame_sample"] = (
                 f"[{frame_sample_range}]"
             )

@@ -22,6 +22,7 @@ val_dataloader_cfg:
     dataset_cfg:
         data_root: {{ data_root }}
         images_dir: {{ images_dir | default('images') }}
+        frame_sample: [{{ frame_sample }}]
         ratio: {{ ratio | default(0.5) }}
         focal_ratio: {{ focal_ratio | default(0.5) }}
         force_sparse_view: {{ force_sparse_view | default('False') }}
