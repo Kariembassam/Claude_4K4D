@@ -60,9 +60,11 @@ class CudaBuilder:
 
         logger.info("Compiling diff-point-rasterization...")
 
-        # Try pre-built wheel first
+        # Build from source with --no-build-isolation so torch is available
+        # during setup.py execution (pip's build isolation creates a clean env
+        # that doesn't include torch, causing setup.py to fail).
         result = self.runner.run_simple(
-            ["pip", "install", f"git+{repo_url}@{commit}"],
+            ["pip", "install", "--no-build-isolation", f"git+{repo_url}@{commit}"],
             env=self.env.get_cuda_env_vars(),
             timeout=600,
         )
