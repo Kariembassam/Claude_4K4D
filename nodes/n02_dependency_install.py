@@ -120,6 +120,26 @@ class FourK4D_DependencyInstall(BaseEasyVolcapNode):
         cuda_env = env.get_cuda_env_vars()
         log_lines.append(f"  TORCH_CUDA_ARCH_LIST={cuda_env.get('TORCH_CUDA_ARCH_LIST', 'not set')}")
 
+        # Step 2b: Install EGL/OpenGL system libraries for headless rendering
+        # EasyVolcap uses OpenGL via EGL for headless GPU rendering during
+        # training and inference. Without these libraries, training crashes
+        # with: AttributeError: 'NoneType' object has no attribute 'eglGetCurrentContext'
+        log_lines.append("\nSTEP 2b: Ensuring EGL/OpenGL system libraries...")
+        egl_result = runner.run_simple(
+            ["apt-get", "install", "-y", "-qq",
+             "libegl1-mesa-dev", "libgl1-mesa-dev", "libegl-dev", "libgles2-mesa-dev"],
+            timeout=120,
+        )
+        if not egl_result.success:
+            logger.warning("Could not install EGL libraries, trying apt-get update first...")
+            runner.run_simple(["apt-get", "update", "-qq"], timeout=120)
+            egl_result = runner.run_simple(
+                ["apt-get", "install", "-y", "-qq",
+                 "libegl1-mesa-dev", "libgl1-mesa-dev", "libegl-dev", "libgles2-mesa-dev"],
+                timeout=120,
+            )
+        log_lines.append(f"  EGL libraries: {'OK' if egl_result.success else 'FAILED (training may crash)'}")
+
         # Step 3: Check PyTorch
         log_lines.append("\nSTEP 3: Checking PyTorch...")
         try:
