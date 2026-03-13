@@ -15,6 +15,23 @@ from ..core.constants import CATEGORIES, DATASET_INFO_TYPE
 
 logger = logging.getLogger("4K4D.n10_viewer")
 
+# Register custom API route to serve 4K4D files from absolute paths
+# ComfyUI's built-in /view endpoint only serves from its own directories
+try:
+    from aiohttp import web
+    from server import PromptServer
+
+    @PromptServer.instance.routes.get("/4k4d/view")
+    async def serve_4k4d_file(request):
+        """Serve files from 4K4D data directories."""
+        filepath = request.query.get("path", "")
+        if not filepath or not os.path.isfile(filepath):
+            return web.Response(status=404, text="File not found")
+        return web.FileResponse(filepath)
+
+except Exception:
+    pass  # Not running inside ComfyUI server context
+
 
 class FourK4D_Viewer(BaseEasyVolcapNode):
     """
@@ -73,11 +90,25 @@ class FourK4D_Viewer(BaseEasyVolcapNode):
         if not original_frames_dir:
             original_frames_dir = os.path.join(dataset_root, "images", "00")
 
+        # Encode small videos as base64 for reliable playback
+        # (avoids path-serving issues entirely for typical preview renders)
+        mp4_b64 = ""
+        if mp4_path and os.path.exists(mp4_path):
+            size_mb = os.path.getsize(mp4_path) / (1024 * 1024)
+            if size_mb < 10:
+                try:
+                    with open(mp4_path, "rb") as f:
+                        mp4_b64 = base64.b64encode(f.read()).decode()
+                    self._node_logger.info(f"Encoded {size_mb:.1f}MB video as base64 for viewer")
+                except Exception as e:
+                    self._node_logger.warning(f"Failed to encode video as base64: {e}")
+
         # Send viewer data to frontend
         viewer_data = {
             "unique_id": unique_id,
             "default_tab": default_tab,
             "mp4_path": mp4_path,
+            "mp4_b64": mp4_b64,
             "ply_dir": ply_dir,
             "original_frames_dir": original_frames_dir,
             "autoplay": autoplay,
