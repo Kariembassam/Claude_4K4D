@@ -214,9 +214,11 @@ class CudaBuilder:
             self.mark_compiled(name)
             return {"success": True, "message": "Installed from CUDA wheel"}
 
-        # Source compilation fallback
+        # Source compilation fallback (--no-build-isolation so torch is
+        # available during setup.py; pip's isolated build env lacks torch)
         result = self.runner.run_simple(
-            ["pip", "install", "git+https://github.com/facebookresearch/pytorch3d.git"],
+            ["pip", "install", "--no-build-isolation",
+             "git+https://github.com/facebookresearch/pytorch3d.git"],
             env=self.env.get_cuda_env_vars(),
             timeout=1200,
         )
