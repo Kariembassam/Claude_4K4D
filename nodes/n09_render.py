@@ -7,6 +7,7 @@ Supports H.264, ProRes, and PNG sequence output.
 
 import logging
 import os
+import struct
 from pathlib import Path
 
 from ..core.base_node import BaseEasyVolcapNode
@@ -96,6 +97,9 @@ class FourK4D_Render(BaseEasyVolcapNode):
                 ply_dir,
                 self._create_error_image("No trained model — training must succeed first"),
             )
+
+        # Export PLY point cloud(s) from the trained checkpoint for 3D viewer
+        self._export_ply_from_checkpoint(model_path, ply_dir, dataset_info)
 
         if easyvolcap_root and os.path.exists(easyvolcap_root):
             # Build evc-test command — base architecture config MUST come first,
@@ -210,6 +214,7 @@ class FourK4D_Render(BaseEasyVolcapNode):
 
         updated_info = self._update_dataset_info(dataset_info, {
             "render_output": render_output_dir,
+            "ply_dir": ply_dir,
         })
 
         return (
@@ -290,3 +295,196 @@ class FourK4D_Render(BaseEasyVolcapNode):
         except Exception:
             pass
         return self._create_error_image("No rendered frames yet")
+
+    def _export_ply_from_checkpoint(self, model_path, ply_dir, dataset_info):
+        """
+        Extract Gaussian positions + colors from trained checkpoint → binary PLY files.
+
+        Supports multiple frames (temporal 4D) — exports one PLY per timestep.
+        Falls back to vhull PLYs if checkpoint parsing fails.
+        """
+        import numpy as np
+
+        os.makedirs(ply_dir, exist_ok=True)
+
+        # Check if PLYs already exist
+        existing = [f for f in os.listdir(ply_dir) if f.endswith('.ply')] if os.path.isdir(ply_dir) else []
+        if existing:
+            self._node_logger.info(f"PLY files already exist in {ply_dir} ({len(existing)} files), skipping export")
+            return
+
+        # Try loading the checkpoint
+        if not model_path or not os.path.isfile(model_path):
+            self._node_logger.warning(f"Model path not found: {model_path}")
+            self._fallback_to_vhull_plys(ply_dir, dataset_info)
+            return
+
+        try:
+            self._node_logger.info(f"Loading checkpoint: {model_path}")
+            data = np.load(model_path, allow_pickle=True)
+            keys = list(data.keys())
+            self._node_logger.info(f"Checkpoint keys ({len(keys)}): {keys[:30]}")
+
+            # Log shapes of all arrays for debugging
+            for k in keys[:20]:
+                try:
+                    arr = data[k]
+                    self._node_logger.info(f"  Key '{k}': shape={arr.shape}, dtype={arr.dtype}")
+                except Exception:
+                    self._node_logger.info(f"  Key '{k}': (non-array)")
+
+            # === Find position data ===
+            pos = None
+            pos_key = None
+            # Common key patterns in 4K4D/EasyVolcap checkpoints
+            pos_candidates = [
+                'xyz', 'pcd', 'means3D', '_xyz', 'pcd_xyz', 'positions',
+                'point_cloud.xyz', 'sampler.pcd', 'sampler.xyz',
+            ]
+            for k in pos_candidates:
+                if k in keys:
+                    pos = data[k]
+                    pos_key = k
+                    break
+            # Fuzzy match: look for keys containing position-related substrings
+            if pos is None:
+                for k in keys:
+                    kl = k.lower()
+                    if any(sub in kl for sub in ['xyz', 'position', 'means3d', 'pcd', 'point']):
+                        arr = data[k]
+                        # Must be a float array with last dim == 3
+                        if hasattr(arr, 'shape') and arr.ndim >= 2 and arr.shape[-1] == 3:
+                            pos = arr
+                            pos_key = k
+                            self._node_logger.info(f"Fuzzy-matched position key: '{k}'")
+                            break
+
+            if pos is None:
+                self._node_logger.warning(
+                    f"Could not find position data in checkpoint. "
+                    f"Keys: {keys}. Falling back to vhull PLYs."
+                )
+                self._fallback_to_vhull_plys(ply_dir, dataset_info)
+                return
+
+            self._node_logger.info(f"Position data '{pos_key}': shape={pos.shape}, dtype={pos.dtype}")
+
+            # === Find color data ===
+            colors = None
+            color_key = None
+            color_candidates = [
+                'rgb', 'colors', 'color', 'features_dc', '_features_dc',
+                'shs_dc', 'sh_coeffs', 'sampler.rgb',
+            ]
+            for k in color_candidates:
+                if k in keys:
+                    colors = data[k]
+                    color_key = k
+                    break
+            if colors is None:
+                for k in keys:
+                    kl = k.lower()
+                    if any(sub in kl for sub in ['rgb', 'color', 'feature', 'sh_coef']):
+                        arr = data[k]
+                        if hasattr(arr, 'shape') and arr.ndim >= 2 and arr.shape[-1] in (3, 4):
+                            colors = arr
+                            color_key = k
+                            self._node_logger.info(f"Fuzzy-matched color key: '{k}'")
+                            break
+
+            if colors is not None:
+                self._node_logger.info(f"Color data '{color_key}': shape={colors.shape}, dtype={colors.dtype}")
+
+            # === Handle temporal dimension ===
+            # pos may be (N, 3) for static or (T, N, 3) for temporal
+            if pos.ndim == 3:
+                # Temporal: export one PLY per frame
+                n_frames = pos.shape[0]
+                self._node_logger.info(f"Temporal checkpoint: {n_frames} frames, {pos.shape[1]} points each")
+                for t in range(n_frames):
+                    frame_pos = pos[t]  # (N, 3)
+                    frame_colors = colors[t] if colors is not None and colors.ndim == 3 else colors
+                    ply_path = os.path.join(ply_dir, f"frame_{t:06d}.ply")
+                    self._write_binary_ply(ply_path, frame_pos, frame_colors)
+                self._node_logger.info(f"Exported {n_frames} temporal PLY files to {ply_dir}")
+            elif pos.ndim == 2:
+                # Static: single PLY
+                ply_path = os.path.join(ply_dir, "frame_000000.ply")
+                self._write_binary_ply(ply_path, pos, colors)
+                self._node_logger.info(f"Exported static PLY with {pos.shape[0]} points to {ply_path}")
+            else:
+                self._node_logger.warning(f"Unexpected position shape: {pos.shape}. Falling back to vhull PLYs.")
+                self._fallback_to_vhull_plys(ply_dir, dataset_info)
+
+        except Exception as e:
+            self._node_logger.warning(f"Failed to export PLY from checkpoint: {e}. Falling back to vhull PLYs.")
+            import traceback
+            self._node_logger.debug(traceback.format_exc())
+            self._fallback_to_vhull_plys(ply_dir, dataset_info)
+
+    def _write_binary_ply(self, ply_path, positions, colors):
+        """Write a binary little-endian PLY file with positions and RGB colors."""
+        import numpy as np
+
+        pos = positions.reshape(-1, 3).astype(np.float32)
+        n = pos.shape[0]
+
+        if colors is not None:
+            col = colors.reshape(-1, colors.shape[-1]).astype(np.float32)
+            # Take only RGB (drop alpha if present)
+            if col.shape[-1] > 3:
+                col = col[:, :3]
+            # Normalize to 0-255
+            if col.max() <= 1.0 + 1e-6:
+                col = (np.clip(col, 0.0, 1.0) * 255).astype(np.uint8)
+            else:
+                col = np.clip(col, 0, 255).astype(np.uint8)
+            # Truncate or pad if count doesn't match positions
+            if col.shape[0] < n:
+                pad = np.full((n - col.shape[0], 3), 200, dtype=np.uint8)
+                col = np.concatenate([col, pad], axis=0)
+            elif col.shape[0] > n:
+                col = col[:n]
+        else:
+            col = np.full((n, 3), 200, dtype=np.uint8)  # light gray
+
+        header = (
+            "ply\n"
+            "format binary_little_endian 1.0\n"
+            f"element vertex {n}\n"
+            "property float x\n"
+            "property float y\n"
+            "property float z\n"
+            "property uchar red\n"
+            "property uchar green\n"
+            "property uchar blue\n"
+            "end_header\n"
+        )
+
+        with open(ply_path, 'wb') as f:
+            f.write(header.encode('ascii'))
+            # Write interleaved position + color data efficiently
+            for i in range(n):
+                f.write(struct.pack('<fff', float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2])))
+                f.write(struct.pack('BBB', int(col[i, 0]), int(col[i, 1]), int(col[i, 2])))
+
+    def _fallback_to_vhull_plys(self, ply_dir, dataset_info):
+        """Copy vhull PLYs to the viewer PLY directory as fallback."""
+        dataset_root = dataset_info.get("dataset_root", "")
+        vhull_dir = os.path.join(dataset_root, "vhulls")
+
+        if not os.path.isdir(vhull_dir):
+            self._node_logger.warning(f"No vhull directory found at {vhull_dir}")
+            return
+
+        import shutil
+        os.makedirs(ply_dir, exist_ok=True)
+        vhull_files = sorted([f for f in os.listdir(vhull_dir) if f.endswith('.ply')])
+
+        for i, fname in enumerate(vhull_files):
+            src = os.path.join(vhull_dir, fname)
+            dst = os.path.join(ply_dir, f"frame_{i:06d}.ply")
+            if not os.path.exists(dst):
+                shutil.copy2(src, dst)
+
+        self._node_logger.info(f"Copied {len(vhull_files)} vhull PLYs to {ply_dir} as fallback")

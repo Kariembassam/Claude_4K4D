@@ -103,6 +103,27 @@ class FourK4D_Viewer(BaseEasyVolcapNode):
                 except Exception as e:
                     self._node_logger.warning(f"Failed to encode video as base64: {e}")
 
+        # Auto-detect PLY directory from render output or dataset_info
+        if not ply_dir:
+            # Check render output
+            ply_candidate = dataset_info.get("ply_dir", "")
+            if ply_candidate and os.path.isdir(ply_candidate):
+                ply_dir = ply_candidate
+            elif render_output:
+                ply_candidate = os.path.join(render_output, "ply")
+                if os.path.isdir(ply_candidate):
+                    ply_dir = ply_candidate
+
+        # Build list of PLY URLs servable via /4k4d/view endpoint
+        ply_urls = []
+        if ply_dir and os.path.isdir(ply_dir):
+            ply_files = sorted([f for f in os.listdir(ply_dir) if f.endswith('.ply')])
+            ply_urls = [
+                f"/4k4d/view?path={os.path.join(ply_dir, f)}"
+                for f in ply_files
+            ]
+            self._node_logger.info(f"Found {len(ply_urls)} PLY files for 3D viewer")
+
         # Send viewer data to frontend
         viewer_data = {
             "unique_id": unique_id,
@@ -110,6 +131,7 @@ class FourK4D_Viewer(BaseEasyVolcapNode):
             "mp4_path": mp4_path,
             "mp4_b64": mp4_b64,
             "ply_dir": ply_dir,
+            "ply_urls": ply_urls,
             "original_frames_dir": original_frames_dir,
             "autoplay": autoplay,
             "loop": loop,
