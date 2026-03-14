@@ -301,10 +301,9 @@ class FourK4D_Render(BaseEasyVolcapNode):
         Provide PLY point cloud files for the 3D viewer.
 
         Strategy (in order of preference):
-        1. Use existing vhull/surfs PLY files from preprocessing (these are
-           high-quality visual-hull point clouds with proper positions + colors)
-        2. Try extracting from PyTorch (.pt) checkpoint
-        3. Try extracting from NumPy (.npz) checkpoint
+        1. Extract trained positions from checkpoint + filter by multi-view mask
+           projection to produce surface-only point clouds (not the full volume).
+        2. Fallback: copy surfs/ PLY files (visual hull — cube-shaped volume).
         """
         os.makedirs(ply_dir, exist_ok=True)
 
@@ -314,15 +313,21 @@ class FourK4D_Render(BaseEasyVolcapNode):
             self._node_logger.info(f"PLY files already exist in {ply_dir} ({len(existing)} files), skipping export")
             return
 
-        # Strategy 1: Use preprocessed vhull/surfs PLYs (preferred — always valid)
+        # Strategy 1: Mask-filtered export from checkpoint + camera data
+        try:
+            if self._export_mask_filtered_ply(model_path, ply_dir, dataset_info):
+                return
+        except Exception as e:
+            self._node_logger.warning(f"Mask-filtered PLY export failed: {e}")
+
+        # Strategy 2: Fallback — copy surfs/vhulls PLYs (visual hull volume)
         if self._copy_surfs_plys(ply_dir, dataset_info):
             return
 
-        # Strategy 2: Try checkpoint export (PyTorch .pt or NumPy .npz)
+        # Strategy 3: Raw checkpoint export
         if model_path and os.path.isfile(model_path):
             try:
                 self._export_from_checkpoint_file(model_path, ply_dir)
-                # Verify we got valid data
                 exported = [f for f in os.listdir(ply_dir) if f.endswith('.ply')]
                 if exported:
                     return
@@ -330,6 +335,394 @@ class FourK4D_Render(BaseEasyVolcapNode):
                 self._node_logger.warning(f"Checkpoint PLY export failed: {e}")
 
         self._node_logger.warning("No PLY data source found for 3D viewer")
+
+    def _export_mask_filtered_ply(self, model_path, ply_dir, dataset_info):
+        """
+        Extract trained point positions from checkpoint, project to camera views,
+        filter by foreground masks, and color by sampling input images.
+
+        This produces a surface-only point cloud that matches the rendered video,
+        instead of the full volumetric visual hull (cube shape).
+
+        Returns True if successful.
+        """
+        import numpy as np
+
+        dataset_root = dataset_info.get("dataset_root", "")
+        if not dataset_root:
+            return False
+
+        # ── Load camera calibration ──────────────────────────────────────
+        intri_path = os.path.join(dataset_root, "intri.yml")
+        extri_path = os.path.join(dataset_root, "extri.yml")
+        if not os.path.isfile(intri_path) or not os.path.isfile(extri_path):
+            self._node_logger.warning("Camera calibration files not found, cannot do mask filtering")
+            return False
+
+        cameras = self._load_opencv_cameras(intri_path, extri_path)
+        if not cameras:
+            self._node_logger.warning("Failed to parse camera calibration")
+            return False
+
+        self._node_logger.info(f"Loaded {len(cameras)} cameras for mask-filtered export")
+
+        # ── Load trained positions from checkpoint ───────────────────────
+        positions_per_frame = self._load_checkpoint_positions(model_path)
+        if positions_per_frame is None:
+            self._node_logger.warning("Could not load positions from checkpoint")
+            return False
+
+        n_frames = len(positions_per_frame)
+        self._node_logger.info(f"Loaded {n_frames} frames from checkpoint, {positions_per_frame[0].shape[0]} points each")
+
+        # ── Load masks and images for each camera ────────────────────────
+        images_dir = os.path.join(dataset_root, "images")
+        mask_dir = os.path.join(dataset_root, "mask")
+        if not os.path.isdir(mask_dir):
+            mask_dir = os.path.join(dataset_root, "masks")
+
+        cam_names = sorted(os.listdir(images_dir)) if os.path.isdir(images_dir) else []
+        if not cam_names:
+            self._node_logger.warning("No camera image directories found")
+            return False
+
+        # ── Process each frame ───────────────────────────────────────────
+        min_visible = max(2, len(cameras) // 2)  # visible in at least half the cameras
+        os.makedirs(ply_dir, exist_ok=True)
+        exported_count = 0
+
+        for frame_idx in range(n_frames):
+            positions = positions_per_frame[frame_idx]  # (N, 3)
+            n_points = positions.shape[0]
+
+            # Track visibility and accumulated colors
+            visibility_count = np.zeros(n_points, dtype=np.int32)
+            color_accum = np.zeros((n_points, 3), dtype=np.float64)
+            color_count = np.zeros(n_points, dtype=np.int32)
+
+            for cam_idx, cam_name in enumerate(cam_names):
+                if cam_name not in cameras:
+                    continue
+
+                cam = cameras[cam_name]
+                K = cam["K"]       # 3x3 intrinsic
+                R = cam["R"]       # 3x3 rotation
+                T = cam["T"]       # 3x1 translation
+
+                # Load mask for this camera+frame
+                mask_cam_dir = os.path.join(mask_dir, cam_name)
+                mask_img = self._load_frame_image(mask_cam_dir, frame_idx, grayscale=True)
+
+                # Load color image for this camera+frame
+                img_cam_dir = os.path.join(images_dir, cam_name)
+                color_img = self._load_frame_image(img_cam_dir, frame_idx, grayscale=False)
+
+                if mask_img is None:
+                    continue
+
+                h, w = mask_img.shape[:2]
+
+                # Project all points: p_cam = R @ p_world + T
+                p_cam = (R @ positions.T + T).T  # (N, 3)
+
+                # Filter points behind camera
+                valid_depth = p_cam[:, 2] > 0.01
+
+                # Project to pixel coordinates: p_px = K @ p_cam
+                p_px = (K @ p_cam.T).T  # (N, 3)
+                px_x = p_px[:, 0] / (p_px[:, 2] + 1e-8)
+                px_y = p_px[:, 1] / (p_px[:, 2] + 1e-8)
+
+                # Check bounds
+                in_bounds = (
+                    valid_depth &
+                    (px_x >= 0) & (px_x < w - 1) &
+                    (px_y >= 0) & (px_y < h - 1)
+                )
+
+                # Sample mask at projected positions
+                ix = np.clip(px_x.astype(np.int32), 0, w - 1)
+                iy = np.clip(px_y.astype(np.int32), 0, h - 1)
+
+                mask_vals = mask_img[iy, ix]
+                # Mask is foreground if > 128 (white = foreground)
+                is_foreground = in_bounds & (mask_vals > 128)
+
+                visibility_count += is_foreground.astype(np.int32)
+
+                # Sample color from input image
+                if color_img is not None:
+                    fg_indices = np.where(is_foreground)[0]
+                    if len(fg_indices) > 0:
+                        sampled_colors = color_img[iy[fg_indices], ix[fg_indices]]
+                        if sampled_colors.ndim == 1:
+                            sampled_colors = sampled_colors.reshape(-1, 1)
+                        if sampled_colors.shape[-1] == 1:
+                            sampled_colors = np.tile(sampled_colors, (1, 3))
+                        color_accum[fg_indices] += sampled_colors[:, :3].astype(np.float64)
+                        color_count[fg_indices] += 1
+
+            # ── Filter by visibility ─────────────────────────────────────
+            keep_mask = visibility_count >= min_visible
+            kept_positions = positions[keep_mask]
+
+            # Average colors
+            kept_color_count = color_count[keep_mask]
+            kept_color_accum = color_accum[keep_mask]
+
+            # Avoid division by zero
+            safe_count = np.maximum(kept_color_count, 1)
+            kept_colors = (kept_color_accum / safe_count[:, np.newaxis]).astype(np.uint8)
+
+            # Points with no color samples get light gray
+            no_color = kept_color_count == 0
+            kept_colors[no_color] = 200
+
+            n_kept = kept_positions.shape[0]
+            self._node_logger.info(
+                f"Frame {frame_idx}: {n_kept}/{n_points} points passed mask filter "
+                f"(visible in >= {min_visible}/{len(cameras)} cameras)"
+            )
+
+            if n_kept > 0:
+                ply_path = os.path.join(ply_dir, f"frame_{frame_idx:06d}.ply")
+                self._write_binary_ply(ply_path, kept_positions, kept_colors)
+                exported_count += 1
+
+        if exported_count > 0:
+            self._node_logger.info(f"Exported {exported_count} mask-filtered PLY files to {ply_dir}")
+            return True
+        return False
+
+    def _load_opencv_cameras(self, intri_path, extri_path):
+        """
+        Parse OpenCV-format YAML camera calibration files.
+
+        Returns dict of camera_name -> {"K": 3x3, "R": 3x3, "T": 3x1}
+        """
+        import numpy as np
+
+        def parse_opencv_yaml(path):
+            """Parse OpenCV YAML file (has %YAML:1.0 header that pyyaml can't handle)."""
+            with open(path, 'r') as f:
+                content = f.read()
+
+            # Strip OpenCV YAML directive that standard parsers choke on
+            lines = content.split('\n')
+            clean_lines = [l for l in lines if not l.startswith('%YAML')]
+            clean = '\n'.join(clean_lines)
+
+            try:
+                import yaml
+                return yaml.safe_load(clean)
+            except Exception:
+                pass
+
+            # Manual fallback parser for opencv-matrix entries
+            result = {}
+            current_key = None
+            current_obj = {}
+
+            for line in lines:
+                line = line.rstrip()
+                if line.startswith('%') or line == '---':
+                    continue
+
+                if ':' in line and not line.startswith(' ') and not line.startswith('\t'):
+                    # Top-level key
+                    if current_key and current_obj:
+                        result[current_key] = current_obj
+                    parts = line.split(':', 1)
+                    current_key = parts[0].strip()
+                    val = parts[1].strip() if len(parts) > 1 else ''
+                    if val and not val.startswith('!!'):
+                        # Simple value
+                        result[current_key] = val
+                        current_key = None
+                        current_obj = {}
+                    else:
+                        current_obj = {}
+                elif current_key and ':' in line:
+                    parts = line.strip().split(':', 1)
+                    k = parts[0].strip()
+                    v = parts[1].strip() if len(parts) > 1 else ''
+                    if k == 'data':
+                        # Parse array: [ 1., 2., 3. ]
+                        v = v.strip('[] ')
+                        try:
+                            current_obj[k] = [float(x.strip()) for x in v.split(',') if x.strip()]
+                        except ValueError:
+                            current_obj[k] = v
+                    else:
+                        try:
+                            current_obj[k] = int(v)
+                        except (ValueError, TypeError):
+                            try:
+                                current_obj[k] = float(v)
+                            except (ValueError, TypeError):
+                                current_obj[k] = v
+
+            if current_key and current_obj:
+                result[current_key] = current_obj
+
+            return result
+
+        try:
+            intri = parse_opencv_yaml(intri_path)
+            extri = parse_opencv_yaml(extri_path)
+        except Exception as e:
+            self._node_logger.warning(f"Failed to parse camera YAML: {e}")
+            return {}
+
+        # Extract camera names
+        names = extri.get("names", [])
+        if isinstance(names, dict):
+            # Sometimes parsed as dict
+            names = list(names.values()) if names else []
+        elif isinstance(names, str):
+            names = [n.strip().strip('"').strip("'") for n in names.split(',')]
+
+        if not names:
+            # Try to discover from keys like K_00, K_01...
+            for key in intri:
+                if key.startswith("K_"):
+                    cam_id = key[2:]
+                    if cam_id not in names:
+                        names.append(cam_id)
+            names = sorted(names)
+
+        cameras = {}
+        for name in names:
+            name_str = str(name).strip('"').strip("'")
+
+            # Intrinsic matrix K
+            k_key = f"K_{name_str}"
+            k_data = intri.get(k_key, {})
+            if isinstance(k_data, dict) and 'data' in k_data:
+                K = np.array(k_data['data'], dtype=np.float64).reshape(3, 3)
+            else:
+                continue
+
+            # Rotation R (Rodrigues vector)
+            r_key = f"R_{name_str}"
+            r_data = extri.get(r_key, {})
+            if isinstance(r_data, dict) and 'data' in r_data:
+                r_vec = np.array(r_data['data'], dtype=np.float64)
+                if r_vec.size == 3:
+                    # Rodrigues vector → rotation matrix
+                    angle = np.linalg.norm(r_vec)
+                    if angle < 1e-8:
+                        R = np.eye(3)
+                    else:
+                        k = r_vec / angle
+                        K_cross = np.array([
+                            [0, -k[2], k[1]],
+                            [k[2], 0, -k[0]],
+                            [-k[1], k[0], 0]
+                        ])
+                        R = np.eye(3) + np.sin(angle) * K_cross + (1 - np.cos(angle)) * (K_cross @ K_cross)
+                elif r_vec.size == 9:
+                    R = r_vec.reshape(3, 3)
+                else:
+                    R = np.eye(3)
+            else:
+                R = np.eye(3)
+
+            # Translation T
+            t_key = f"T_{name_str}"
+            t_data = extri.get(t_key, {})
+            if isinstance(t_data, dict) and 'data' in t_data:
+                T = np.array(t_data['data'], dtype=np.float64).reshape(3, 1)
+            else:
+                T = np.zeros((3, 1))
+
+            cameras[name_str] = {"K": K, "R": R, "T": T}
+
+        return cameras
+
+    def _load_checkpoint_positions(self, model_path):
+        """
+        Load per-frame point positions from the trained checkpoint.
+
+        Returns list of numpy arrays, one per frame, each shape (N, 3).
+        Falls back to .npz sibling if model_path is .pt.
+        """
+        import numpy as np
+
+        # Prefer .npz for positions (smaller, faster to load than .pt)
+        npz_path = model_path
+        if model_path.endswith('.pt') or model_path.endswith('.pth'):
+            npz_path = model_path.rsplit('.', 1)[0] + '.npz'
+
+        if os.path.isfile(npz_path):
+            try:
+                data = np.load(npz_path, allow_pickle=True)
+                keys = list(data.keys())
+
+                # Find sampler.pcds.N keys
+                pcd_keys = sorted([k for k in keys if k.startswith('sampler.pcds.')])
+                if pcd_keys:
+                    frames = []
+                    for k in pcd_keys:
+                        arr = data[k]
+                        if arr.ndim == 2 and arr.shape[-1] == 3:
+                            frames.append(arr.astype(np.float32))
+                    if frames:
+                        return frames
+            except Exception as e:
+                self._node_logger.warning(f"Failed to load NPZ positions: {e}")
+
+        # Fallback: try .pt file
+        if os.path.isfile(model_path) and (model_path.endswith('.pt') or model_path.endswith('.pth')):
+            try:
+                import torch
+                ckpt = torch.load(model_path, map_location='cpu', weights_only=False)
+                state = ckpt.get('model', ckpt)
+                if isinstance(state, dict):
+                    pcd_keys = sorted([k for k in state.keys() if 'pcds' in k.lower()])
+                    frames = []
+                    for k in pcd_keys:
+                        t = state[k]
+                        if hasattr(t, 'numpy'):
+                            t = t.numpy()
+                        if t.ndim == 2 and t.shape[-1] == 3:
+                            frames.append(t.astype(np.float32))
+                    if frames:
+                        return frames
+            except Exception as e:
+                self._node_logger.warning(f"Failed to load PT positions: {e}")
+
+        return None
+
+    def _load_frame_image(self, cam_dir, frame_idx, grayscale=False):
+        """Load an image from a camera directory by frame index."""
+        import numpy as np
+
+        if not os.path.isdir(cam_dir):
+            return None
+
+        files = sorted([
+            f for f in os.listdir(cam_dir)
+            if f.lower().endswith(('.png', '.jpg', '.jpeg'))
+        ])
+        if not files:
+            return None
+
+        # Clamp frame index
+        idx = min(frame_idx, len(files) - 1)
+        img_path = os.path.join(cam_dir, files[idx])
+
+        try:
+            from PIL import Image
+            img = Image.open(img_path)
+            if grayscale:
+                img = img.convert('L')
+                return np.array(img)
+            else:
+                img = img.convert('RGB')
+                return np.array(img)
+        except Exception:
+            return None
 
     def _write_binary_ply(self, ply_path, positions, colors):
         """Write a binary little-endian PLY file with positions and RGB colors."""
