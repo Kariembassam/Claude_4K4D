@@ -397,7 +397,12 @@ class FourK4D_Train(BaseEasyVolcapNode):
             "dataloader_cfg.dataset_cfg.use_vhulls": "False",
             "val_dataloader_cfg.dataset_cfg.use_vhulls": "False",
         }
-        if frame_sample_range and frame_sample_range != "0,None,1":
+        # Only override frame_sample if a valid range like "0,24,1" is given.
+        # Skip "none", empty, or the default "0,None,1" to let the YAML config
+        # provide the correct value (EasyVolcap expects a 3-element list).
+        if (frame_sample_range
+                and frame_sample_range.lower() not in ("none", "0,none,1", "")
+                and "," in frame_sample_range):
             extra_args["dataloader_cfg.dataset_cfg.frame_sample"] = (
                 f"[{frame_sample_range}]"
             )
