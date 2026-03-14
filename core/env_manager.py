@@ -107,7 +107,10 @@ class EnvManager:
         base = self.node_pack_root
 
         if self.is_runpod:
-            data_root = Path("/workspace/ComfyUI/custom_nodes/ComfyUI-4K4D/data")
+            # Use our own data directory (relative to node_pack_root)
+            # instead of hardcoding a path that may not match the active
+            # ComfyUI install.
+            data_root = base / DIR_DATA
             exports_root = Path("/workspace/exports/4k4d")
         else:
             data_root = base / DIR_DATA

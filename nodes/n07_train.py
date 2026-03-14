@@ -256,9 +256,13 @@ class FourK4D_Train(BaseEasyVolcapNode):
             self._node_logger.info("Quality gate PASSED — proceeding with training.")
 
         dataset_name = dataset_info["dataset_name"]
-        dataset_root = dataset_info["dataset_root"]
+        # Resolve symlinks so all paths are canonical — prevents mismatches
+        # between where evc-train saves checkpoints and where we look for them.
+        dataset_root = os.path.realpath(dataset_info["dataset_root"])
         camera_count = dataset_info.get("camera_count", 5)
         easyvolcap_root = dataset_info.get("easyvolcap_root")
+        if easyvolcap_root:
+            easyvolcap_root = os.path.realpath(easyvolcap_root)
 
         # ── Step 2: Determine iterations ─────────────────────────────────────
         if training_mode == "preview_static":
