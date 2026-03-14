@@ -121,6 +121,17 @@ class FourK4D_Train(BaseEasyVolcapNode):
                         ),
                     },
                 ),
+                "force_retrain": (
+                    "BOOLEAN",
+                    {
+                        "default": False,
+                        "tooltip": (
+                            "If True, clears previous training cache and forces a fresh "
+                            "training run from scratch. Use this when you want to retrain "
+                            "with different settings or more iterations."
+                        ),
+                    },
+                ),
                 "view_sample_range": (
                     "STRING",
                     {
@@ -189,6 +200,7 @@ class FourK4D_Train(BaseEasyVolcapNode):
         max_iterations: int = 200,
         checkpoint_every_n: int = 100,
         resume_training: bool = True,
+        force_retrain: bool = False,
         view_sample_range: str = "0,None,1",
         frame_sample_range: str = "0,None,1",
         background_model: str = "none",
@@ -310,7 +322,18 @@ class FourK4D_Train(BaseEasyVolcapNode):
         resume_from = None
         start_iteration = 0
 
-        if resume_training and ckpt_mgr.should_resume(self.STAGE_NAME):
+        # force_retrain: clear all previous training state so we start fresh
+        if force_retrain:
+            self._node_logger.info(
+                "force_retrain=True — clearing previous training cache"
+            )
+            ckpt_mgr.clear(self.STAGE_NAME)
+            # Also delete old checkpoint files so evc-train doesn't auto-resume
+            self._clear_old_checkpoints(dataset_info, experiment_name)
+            # Clear old PLY files so render node regenerates them
+            self._clear_old_ply_files(dataset_root)
+
+        elif resume_training and ckpt_mgr.should_resume(self.STAGE_NAME):
             checkpoint_data = ckpt_mgr.get_latest_checkpoint(self.STAGE_NAME)
             if checkpoint_data:
                 resume_from = checkpoint_data.get("path")
@@ -319,7 +342,7 @@ class FourK4D_Train(BaseEasyVolcapNode):
                     f"Resuming from checkpoint: {resume_from} (iter {start_iteration})"
                 )
         elif resume_training and ckpt_mgr.is_completed(self.STAGE_NAME):
-            # Already completed previously -- check if user wants to redo
+            # Already completed previously — return cached result
             prev_meta = ckpt_mgr.get_metadata(self.STAGE_NAME)
             prev_model = prev_meta.get("model_path", "")
             if prev_model and Path(prev_model).exists():
@@ -945,6 +968,43 @@ class FourK4D_Train(BaseEasyVolcapNode):
             return img
         except Exception:
             return self._create_error_image(text)
+
+    def _clear_old_checkpoints(self, dataset_info, experiment_name):
+        """Delete old trained model checkpoints so evc-train starts fresh."""
+        import shutil
+
+        easyvolcap_root = dataset_info.get("easyvolcap_root", "")
+        if not easyvolcap_root:
+            return
+
+        fourk4d_root = Path(easyvolcap_root).parent / "4K4D"
+        ckpt_dir = fourk4d_root / "data" / "trained_model" / experiment_name
+
+        if ckpt_dir.is_dir():
+            self._node_logger.info(f"Deleting old checkpoints: {ckpt_dir}")
+            try:
+                shutil.rmtree(ckpt_dir)
+            except Exception as e:
+                self._node_logger.warning(f"Failed to delete old checkpoints: {e}")
+
+    def _clear_old_ply_files(self, dataset_root):
+        """Delete old PLY viewer files so the render node regenerates them."""
+        import shutil
+
+        render_output = Path(dataset_root) / "render_output"
+        if not render_output.is_dir():
+            return
+
+        for mode_dir in render_output.iterdir():
+            if not mode_dir.is_dir():
+                continue
+            ply_dir = mode_dir / "ply"
+            if ply_dir.is_dir():
+                self._node_logger.info(f"Deleting old PLY files: {ply_dir}")
+                try:
+                    shutil.rmtree(ply_dir)
+                except Exception as e:
+                    self._node_logger.warning(f"Failed to delete old PLYs: {e}")
 
 
 class _PSNRTracker:

@@ -307,11 +307,24 @@ class FourK4D_Render(BaseEasyVolcapNode):
         """
         os.makedirs(ply_dir, exist_ok=True)
 
-        # Check if PLYs already exist in the output dir
+        # Check if PLYs already exist and are up-to-date with the checkpoint
         existing = [f for f in os.listdir(ply_dir) if f.endswith('.ply')] if os.path.isdir(ply_dir) else []
         if existing:
-            self._node_logger.info(f"PLY files already exist in {ply_dir} ({len(existing)} files), skipping export")
-            return
+            # Check if checkpoint is newer than existing PLYs (stale after retrain)
+            ply_mtime = max(
+                os.path.getmtime(os.path.join(ply_dir, f)) for f in existing
+            )
+            ckpt_mtime = os.path.getmtime(model_path) if model_path and os.path.isfile(model_path) else 0
+            if ckpt_mtime > ply_mtime:
+                self._node_logger.info(
+                    "Checkpoint is newer than existing PLYs — regenerating"
+                )
+                import shutil
+                shutil.rmtree(ply_dir)
+                os.makedirs(ply_dir, exist_ok=True)
+            else:
+                self._node_logger.info(f"PLY files already exist in {ply_dir} ({len(existing)} files), skipping export")
+                return
 
         # Strategy 1: Mask-filtered export from checkpoint + camera data
         try:
