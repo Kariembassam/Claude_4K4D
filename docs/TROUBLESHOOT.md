@@ -115,8 +115,16 @@ RunPod instances have limited disk. Monitor usage:
 
 #### Persistent Storage
 - Store datasets in `/workspace/` (persists across pod restarts)
-- Models in `/workspace/ComfyUI/models/` persist
-- Custom node directory persists at `/workspace/ComfyUI/custom_nodes/`
+- The active ComfyUI install path varies by RunPod template — check which one is running (e.g. `/workspace/runpod-slim/ComfyUI/` vs `/workspace/ComfyUI/`)
+- Custom node directory persists under whichever ComfyUI install is active
+
+#### Multiple ComfyUI Installs
+Some RunPod templates have two ComfyUI installs (e.g. `/workspace/ComfyUI/` and `/workspace/runpod-slim/ComfyUI/`). Only one is active. Symptoms of using the wrong path:
+- Training completes but no checkpoint files appear
+- Data directories don't match between nodes
+- Symlinks pointing to the wrong install cause silent path mismatches
+
+**Solution**: The nodes use relative paths from their own install location. Ensure you cloned into the **active** ComfyUI's `custom_nodes/` directory. Check which ComfyUI is running: `ps aux | grep main.py`
 
 #### GPU Not Detected
 ```bash
@@ -124,17 +132,23 @@ nvidia-smi  # Should show GPU info
 python -c "import torch; print(torch.cuda.is_available())"
 ```
 
+### Training Crashes with IndexError: list index out of range
+
+**Symptom**: `IndexError: list index out of range` at `self.frame_sample[1]`
+
+**Cause**: The `frame_sample_range` widget was set to "none" or an invalid value. EasyVolcap expects a 3-element list `[start, end, step]`.
+
+**Solution**: Leave `frame_sample_range` as "none" (the node now correctly skips it) or provide a valid range like "0,24,1". This was fixed in commit `364aa75`.
+
 ### Viewer Not Rendering
 
 **Symptom**: WebGL viewer shows blank canvas
 
 **Solutions**:
-1. The bundled Three.js is a stub — for full WebGL, download the complete library:
-   ```bash
-   curl -o web/js/three.min.js https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js
-   ```
+1. The bundled Three.js r128 library should work out of the box. If the 3D View tab is blank, check the browser console for JS errors
 2. Video tab should work regardless — check that render output files exist
 3. Browser must support WebGL2: check at `chrome://gpu`
+4. Ensure PLY files were generated — check the render output `ply/` directory
 
 ## Getting Help
 
