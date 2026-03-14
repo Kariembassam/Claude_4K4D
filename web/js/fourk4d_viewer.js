@@ -302,6 +302,15 @@ app.registerExtension({
             return;
         }
 
+        // Deferred init: call stored factory functions if PLYLoader/OrbitControls not yet registered
+        // (handles case where these scripts loaded before THREE.js)
+        if (!THREE.PLYLoader && window.__4K4D_initPLYLoader) {
+            window.__4K4D_initPLYLoader(THREE);
+        }
+        if (!THREE.OrbitControls && window.__4K4D_initOrbitControls) {
+            window.__4K4D_initOrbitControls(THREE);
+        }
+
         if (!THREE.PLYLoader) {
             console.error("[4K4D] THREE.PLYLoader not loaded — check PLYLoader.js");
             webglTab.querySelector(".fourk4d-3d-info").textContent = "Error: PLYLoader not loaded";

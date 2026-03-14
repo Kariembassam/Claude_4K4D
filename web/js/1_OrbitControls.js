@@ -11,12 +11,9 @@
 (function (global) {
     'use strict';
 
-    const THREE = global.THREE;
-
-    if (!THREE) {
-        console.warn('OrbitControls: THREE is not defined. Load three.min.js first.');
-        return;
-    }
+    function initOrbitControls(THREE) {
+        if (!THREE) return;
+        if (THREE.OrbitControls) return; // Already registered
 
     const STATE = {
         NONE: -1,
@@ -408,6 +405,13 @@
         }
     }
 
-    THREE.OrbitControls = OrbitControls;
+        THREE.OrbitControls = OrbitControls;
+    }
+
+    // Try immediate init, or store for deferred init
+    if (global.THREE) {
+        initOrbitControls(global.THREE);
+    }
+    global.__4K4D_initOrbitControls = initOrbitControls;
 
 })(typeof window !== 'undefined' ? window : this);

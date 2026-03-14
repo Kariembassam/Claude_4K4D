@@ -11,12 +11,9 @@
 (function (global) {
     'use strict';
 
-    const THREE = global.THREE;
-
-    if (!THREE) {
-        console.warn('PLYLoader: THREE is not defined. Load three.min.js first.');
-        return;
-    }
+    function initPLYLoader(THREE) {
+        if (!THREE) return;
+        if (THREE.PLYLoader) return; // Already registered
 
     class PLYLoader extends THREE.Loader {
 
@@ -291,6 +288,13 @@
         }
     }
 
-    THREE.PLYLoader = PLYLoader;
+        THREE.PLYLoader = PLYLoader;
+    }
+
+    // Try immediate init, or store for deferred init
+    if (global.THREE) {
+        initPLYLoader(global.THREE);
+    }
+    global.__4K4D_initPLYLoader = initPLYLoader;
 
 })(typeof window !== 'undefined' ? window : this);
