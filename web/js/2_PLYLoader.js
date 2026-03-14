@@ -25,6 +25,7 @@
             const scope = this;
             const loader = new THREE.FileLoader(this.manager);
             loader.setPath(this.path);
+            loader.setResponseType('arraybuffer');
             loader.load(url, function (data) {
                 try {
                     onLoad(scope.parse(data));

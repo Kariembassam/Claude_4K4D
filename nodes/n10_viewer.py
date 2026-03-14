@@ -103,16 +103,30 @@ class FourK4D_Viewer(BaseEasyVolcapNode):
                 except Exception as e:
                     self._node_logger.warning(f"Failed to encode video as base64: {e}")
 
-        # Auto-detect PLY directory from render output or dataset_info
+        # Auto-detect PLY directory from render output, dataset_info, or surfs/
         if not ply_dir:
-            # Check render output
+            # Check render output PLY dir (populated by render node)
             ply_candidate = dataset_info.get("ply_dir", "")
             if ply_candidate and os.path.isdir(ply_candidate):
-                ply_dir = ply_candidate
-            elif render_output:
+                ply_files = [f for f in os.listdir(ply_candidate) if f.endswith('.ply')]
+                if ply_files:
+                    ply_dir = ply_candidate
+            if not ply_dir and render_output:
                 ply_candidate = os.path.join(render_output, "ply")
                 if os.path.isdir(ply_candidate):
-                    ply_dir = ply_candidate
+                    ply_files = [f for f in os.listdir(ply_candidate) if f.endswith('.ply')]
+                    if ply_files:
+                        ply_dir = ply_candidate
+            # Fallback: use surfs/ or vhulls/ from preprocessing (always valid)
+            if not ply_dir:
+                for subdir in ("surfs", "vhulls"):
+                    candidate = os.path.join(dataset_root, subdir)
+                    if os.path.isdir(candidate):
+                        ply_files = [f for f in os.listdir(candidate) if f.endswith('.ply')]
+                        if ply_files:
+                            ply_dir = candidate
+                            self._node_logger.info(f"Using {subdir}/ PLY files for 3D viewer")
+                            break
 
         # Build list of PLY URLs servable via /4k4d/view endpoint
         ply_urls = []

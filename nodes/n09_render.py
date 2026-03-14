@@ -298,129 +298,38 @@ class FourK4D_Render(BaseEasyVolcapNode):
 
     def _export_ply_from_checkpoint(self, model_path, ply_dir, dataset_info):
         """
-        Extract Gaussian positions + colors from trained checkpoint → binary PLY files.
+        Provide PLY point cloud files for the 3D viewer.
 
-        Supports multiple frames (temporal 4D) — exports one PLY per timestep.
-        Falls back to vhull PLYs if checkpoint parsing fails.
+        Strategy (in order of preference):
+        1. Use existing vhull/surfs PLY files from preprocessing (these are
+           high-quality visual-hull point clouds with proper positions + colors)
+        2. Try extracting from PyTorch (.pt) checkpoint
+        3. Try extracting from NumPy (.npz) checkpoint
         """
-        import numpy as np
-
         os.makedirs(ply_dir, exist_ok=True)
 
-        # Check if PLYs already exist
+        # Check if PLYs already exist in the output dir
         existing = [f for f in os.listdir(ply_dir) if f.endswith('.ply')] if os.path.isdir(ply_dir) else []
         if existing:
             self._node_logger.info(f"PLY files already exist in {ply_dir} ({len(existing)} files), skipping export")
             return
 
-        # Try loading the checkpoint
-        if not model_path or not os.path.isfile(model_path):
-            self._node_logger.warning(f"Model path not found: {model_path}")
-            self._fallback_to_vhull_plys(ply_dir, dataset_info)
+        # Strategy 1: Use preprocessed vhull/surfs PLYs (preferred — always valid)
+        if self._copy_surfs_plys(ply_dir, dataset_info):
             return
 
-        try:
-            self._node_logger.info(f"Loading checkpoint: {model_path}")
-            data = np.load(model_path, allow_pickle=True)
-            keys = list(data.keys())
-            self._node_logger.info(f"Checkpoint keys ({len(keys)}): {keys[:30]}")
+        # Strategy 2: Try checkpoint export (PyTorch .pt or NumPy .npz)
+        if model_path and os.path.isfile(model_path):
+            try:
+                self._export_from_checkpoint_file(model_path, ply_dir)
+                # Verify we got valid data
+                exported = [f for f in os.listdir(ply_dir) if f.endswith('.ply')]
+                if exported:
+                    return
+            except Exception as e:
+                self._node_logger.warning(f"Checkpoint PLY export failed: {e}")
 
-            # Log shapes of all arrays for debugging
-            for k in keys[:20]:
-                try:
-                    arr = data[k]
-                    self._node_logger.info(f"  Key '{k}': shape={arr.shape}, dtype={arr.dtype}")
-                except Exception:
-                    self._node_logger.info(f"  Key '{k}': (non-array)")
-
-            # === Find position data ===
-            pos = None
-            pos_key = None
-            # Common key patterns in 4K4D/EasyVolcap checkpoints
-            pos_candidates = [
-                'xyz', 'pcd', 'means3D', '_xyz', 'pcd_xyz', 'positions',
-                'point_cloud.xyz', 'sampler.pcd', 'sampler.xyz',
-            ]
-            for k in pos_candidates:
-                if k in keys:
-                    pos = data[k]
-                    pos_key = k
-                    break
-            # Fuzzy match: look for keys containing position-related substrings
-            if pos is None:
-                for k in keys:
-                    kl = k.lower()
-                    if any(sub in kl for sub in ['xyz', 'position', 'means3d', 'pcd', 'point']):
-                        arr = data[k]
-                        # Must be a float array with last dim == 3
-                        if hasattr(arr, 'shape') and arr.ndim >= 2 and arr.shape[-1] == 3:
-                            pos = arr
-                            pos_key = k
-                            self._node_logger.info(f"Fuzzy-matched position key: '{k}'")
-                            break
-
-            if pos is None:
-                self._node_logger.warning(
-                    f"Could not find position data in checkpoint. "
-                    f"Keys: {keys}. Falling back to vhull PLYs."
-                )
-                self._fallback_to_vhull_plys(ply_dir, dataset_info)
-                return
-
-            self._node_logger.info(f"Position data '{pos_key}': shape={pos.shape}, dtype={pos.dtype}")
-
-            # === Find color data ===
-            colors = None
-            color_key = None
-            color_candidates = [
-                'rgb', 'colors', 'color', 'features_dc', '_features_dc',
-                'shs_dc', 'sh_coeffs', 'sampler.rgb',
-            ]
-            for k in color_candidates:
-                if k in keys:
-                    colors = data[k]
-                    color_key = k
-                    break
-            if colors is None:
-                for k in keys:
-                    kl = k.lower()
-                    if any(sub in kl for sub in ['rgb', 'color', 'feature', 'sh_coef']):
-                        arr = data[k]
-                        if hasattr(arr, 'shape') and arr.ndim >= 2 and arr.shape[-1] in (3, 4):
-                            colors = arr
-                            color_key = k
-                            self._node_logger.info(f"Fuzzy-matched color key: '{k}'")
-                            break
-
-            if colors is not None:
-                self._node_logger.info(f"Color data '{color_key}': shape={colors.shape}, dtype={colors.dtype}")
-
-            # === Handle temporal dimension ===
-            # pos may be (N, 3) for static or (T, N, 3) for temporal
-            if pos.ndim == 3:
-                # Temporal: export one PLY per frame
-                n_frames = pos.shape[0]
-                self._node_logger.info(f"Temporal checkpoint: {n_frames} frames, {pos.shape[1]} points each")
-                for t in range(n_frames):
-                    frame_pos = pos[t]  # (N, 3)
-                    frame_colors = colors[t] if colors is not None and colors.ndim == 3 else colors
-                    ply_path = os.path.join(ply_dir, f"frame_{t:06d}.ply")
-                    self._write_binary_ply(ply_path, frame_pos, frame_colors)
-                self._node_logger.info(f"Exported {n_frames} temporal PLY files to {ply_dir}")
-            elif pos.ndim == 2:
-                # Static: single PLY
-                ply_path = os.path.join(ply_dir, "frame_000000.ply")
-                self._write_binary_ply(ply_path, pos, colors)
-                self._node_logger.info(f"Exported static PLY with {pos.shape[0]} points to {ply_path}")
-            else:
-                self._node_logger.warning(f"Unexpected position shape: {pos.shape}. Falling back to vhull PLYs.")
-                self._fallback_to_vhull_plys(ply_dir, dataset_info)
-
-        except Exception as e:
-            self._node_logger.warning(f"Failed to export PLY from checkpoint: {e}. Falling back to vhull PLYs.")
-            import traceback
-            self._node_logger.debug(traceback.format_exc())
-            self._fallback_to_vhull_plys(ply_dir, dataset_info)
+        self._node_logger.warning("No PLY data source found for 3D viewer")
 
     def _write_binary_ply(self, ply_path, positions, colors):
         """Write a binary little-endian PLY file with positions and RGB colors."""
@@ -468,23 +377,147 @@ class FourK4D_Render(BaseEasyVolcapNode):
                 f.write(struct.pack('<fff', float(pos[i, 0]), float(pos[i, 1]), float(pos[i, 2])))
                 f.write(struct.pack('BBB', int(col[i, 0]), int(col[i, 1]), int(col[i, 2])))
 
-    def _fallback_to_vhull_plys(self, ply_dir, dataset_info):
-        """Copy vhull PLYs to the viewer PLY directory as fallback."""
-        dataset_root = dataset_info.get("dataset_root", "")
-        vhull_dir = os.path.join(dataset_root, "vhulls")
+    def _copy_surfs_plys(self, ply_dir, dataset_info):
+        """
+        Copy preprocessed surface/vhull PLY files to the viewer PLY directory.
 
-        if not os.path.isdir(vhull_dir):
-            self._node_logger.warning(f"No vhull directory found at {vhull_dir}")
+        Looks in surfs/ (EasyVolcap preprocessing output) and vhulls/ as fallback.
+        Returns True if PLY files were found and copied.
+        """
+        import shutil
+
+        dataset_root = dataset_info.get("dataset_root", "")
+        # surfs/ is the primary output from EasyVolcap preprocessing (visual hull)
+        # vhulls/ is an alternative name used by some pipeline versions
+        for subdir in ("surfs", "vhulls"):
+            source_dir = os.path.join(dataset_root, subdir)
+            if not os.path.isdir(source_dir):
+                continue
+
+            ply_files = sorted([f for f in os.listdir(source_dir) if f.endswith('.ply')])
+            if not ply_files:
+                continue
+
+            os.makedirs(ply_dir, exist_ok=True)
+            for i, fname in enumerate(ply_files):
+                src = os.path.join(source_dir, fname)
+                dst = os.path.join(ply_dir, f"frame_{i:06d}.ply")
+                if not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+
+            self._node_logger.info(
+                f"Copied {len(ply_files)} PLY files from {source_dir} to {ply_dir}"
+            )
+            return True
+
+        return False
+
+    def _export_from_checkpoint_file(self, model_path, ply_dir):
+        """
+        Try to extract point cloud data from a trained model checkpoint.
+        Supports both PyTorch (.pt/.pth) and NumPy (.npz) formats.
+        """
+        import numpy as np
+
+        ext = os.path.splitext(model_path)[1].lower()
+
+        if ext in ('.pt', '.pth', '.ckpt'):
+            self._export_from_pytorch_checkpoint(model_path, ply_dir)
+        elif ext == '.npz':
+            self._export_from_npz_checkpoint(model_path, ply_dir)
+        else:
+            self._node_logger.warning(f"Unknown checkpoint format: {ext}")
+
+    def _export_from_pytorch_checkpoint(self, model_path, ply_dir):
+        """Extract point cloud from PyTorch checkpoint."""
+        import numpy as np
+        import torch
+
+        self._node_logger.info(f"Loading PyTorch checkpoint: {model_path}")
+        data = torch.load(model_path, map_location='cpu', weights_only=False)
+
+        # PyTorch checkpoints may be a state_dict or have 'state_dict' key
+        if isinstance(data, dict) and 'state_dict' in data:
+            data = data['state_dict']
+        elif isinstance(data, dict) and 'model' in data:
+            data = data['model']
+
+        if not isinstance(data, dict):
+            self._node_logger.warning(f"Unexpected checkpoint type: {type(data)}")
             return
 
-        import shutil
-        os.makedirs(ply_dir, exist_ok=True)
-        vhull_files = sorted([f for f in os.listdir(vhull_dir) if f.endswith('.ply')])
+        keys = list(data.keys())
+        self._node_logger.info(f"Checkpoint keys ({len(keys)}): {keys[:30]}")
 
-        for i, fname in enumerate(vhull_files):
-            src = os.path.join(vhull_dir, fname)
-            dst = os.path.join(ply_dir, f"frame_{i:06d}.ply")
-            if not os.path.exists(dst):
-                shutil.copy2(src, dst)
+        # Find position and color tensors
+        pos, colors = self._find_pos_color_in_dict(data, keys)
+        if pos is None:
+            self._node_logger.warning(f"No position data found in PyTorch checkpoint")
+            return
 
-        self._node_logger.info(f"Copied {len(vhull_files)} vhull PLYs to {ply_dir} as fallback")
+        self._write_ply_from_arrays(ply_dir, pos, colors)
+
+    def _export_from_npz_checkpoint(self, model_path, ply_dir):
+        """Extract point cloud from NumPy .npz checkpoint."""
+        import numpy as np
+
+        self._node_logger.info(f"Loading NPZ checkpoint: {model_path}")
+        data = np.load(model_path, allow_pickle=True)
+        keys = list(data.keys())
+        self._node_logger.info(f"NPZ keys ({len(keys)}): {keys[:30]}")
+
+        pos, colors = self._find_pos_color_in_dict(data, keys)
+        if pos is None:
+            self._node_logger.warning(f"No position data found in NPZ checkpoint")
+            return
+
+        self._write_ply_from_arrays(ply_dir, pos, colors)
+
+    def _find_pos_color_in_dict(self, data, keys):
+        """Find position and color arrays in a checkpoint dict."""
+        import numpy as np
+
+        pos = None
+        colors = None
+
+        # Position candidates
+        for k in keys:
+            kl = k.lower()
+            if any(sub in kl for sub in ['xyz', 'position', 'means3d', '.pcd', 'point']):
+                arr = data[k]
+                if hasattr(arr, 'numpy'):
+                    arr = arr.numpy()  # torch tensor → numpy
+                if hasattr(arr, 'shape') and arr.ndim >= 2 and arr.shape[-1] == 3:
+                    pos = arr
+                    self._node_logger.info(f"Position key: '{k}' shape={arr.shape}")
+                    break
+
+        # Color candidates
+        for k in keys:
+            kl = k.lower()
+            if any(sub in kl for sub in ['rgb', 'color', 'feature_dc', 'sh_coef']):
+                arr = data[k]
+                if hasattr(arr, 'numpy'):
+                    arr = arr.numpy()
+                if hasattr(arr, 'shape') and arr.ndim >= 2 and arr.shape[-1] in (3, 4):
+                    colors = arr
+                    self._node_logger.info(f"Color key: '{k}' shape={arr.shape}")
+                    break
+
+        return pos, colors
+
+    def _write_ply_from_arrays(self, ply_dir, pos, colors):
+        """Write PLY files from position/color numpy arrays."""
+        import numpy as np
+
+        if pos.ndim == 3:
+            n_frames = pos.shape[0]
+            self._node_logger.info(f"Temporal: {n_frames} frames, {pos.shape[1]} points each")
+            for t in range(n_frames):
+                frame_colors = colors[t] if colors is not None and colors.ndim == 3 else colors
+                ply_path = os.path.join(ply_dir, f"frame_{t:06d}.ply")
+                self._write_binary_ply(ply_path, pos[t], frame_colors)
+        elif pos.ndim == 2:
+            ply_path = os.path.join(ply_dir, "frame_000000.ply")
+            self._write_binary_ply(ply_path, pos, colors)
+            self._node_logger.info(f"Exported {pos.shape[0]} points to {ply_path}")
