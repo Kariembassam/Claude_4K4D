@@ -403,10 +403,22 @@ app.registerExtension({
                 loader.load(
                     plyUrls[index],
                     (geometry) => {
-                        // Create point cloud material
                         const hasColors = geometry.getAttribute && geometry.getAttribute("color");
+
+                        // Compute bbox FIRST so every frame can size its points
+                        // relative to its own cloud (the old code only sized frame 0,
+                        // leaving all other frames at a tiny fixed 0.008 -> sparse dots).
+                        geometry.computeBoundingBox();
+                        const bbox = geometry.boundingBox;
+                        const _sz = new THREE.Vector3(); bbox.getSize(_sz);
+                        const _maxDim = Math.max(_sz.x, _sz.y, _sz.z) || 1;
+                        const _cnt = geometry.getAttribute("position").count || 1;
+                        // Bigger heuristic so sparse splats read as a solid figure.
+                        const _psize = Math.max(0.004,
+                            Math.min(_maxDim / Math.pow(_cnt, 1 / 3) * 1.4, _maxDim * 0.05));
+
                         const material = new THREE.PointsMaterial({
-                            size: 0.008,
+                            size: _psize,
                             vertexColors: hasColors ? true : false,
                             sizeAttenuation: true,
                             color: hasColors ? 0xffffff : 0xff8c00,
@@ -415,13 +427,8 @@ app.registerExtension({
                         const points = new THREE.Points(geometry, material);
                         points.visible = false;
 
-                        // Compute bounding box for centering
-                        geometry.computeBoundingBox();
-                        const bbox = geometry.boundingBox;
                         const center = new THREE.Vector3();
                         bbox.getCenter(center);
-
-                        // Store centering offset
                         points.position.set(-center.x, -center.y, -center.z);
 
                         loadedFrames[index] = points;
@@ -430,24 +437,14 @@ app.registerExtension({
                         // Auto-fit camera on first loaded frame
                         if (!hasSetCamera) {
                             hasSetCamera = true;
-                            const size = new THREE.Vector3();
-                            bbox.getSize(size);
-                            const maxDim = Math.max(size.x, size.y, size.z);
-                            const dist = maxDim > 0 ? maxDim * 1.8 : 3;
+                            const dist = _maxDim > 0 ? _maxDim * 1.8 : 3;
                             camera.position.set(dist * 0.5, dist * 0.3, dist);
-                            camera.near = maxDim * 0.001;
-                            camera.far = maxDim * 100;
+                            camera.near = _maxDim * 0.001;
+                            camera.far = _maxDim * 100;
                             camera.updateProjectionMatrix();
                             controls.target.set(0, 0, 0);
                             controls.update();
-
-                            // Adjust point size based on scale
-                            const pointCount = geometry.getAttribute("position").count;
-                            // Heuristic: smaller points for denser clouds
-                            const idealSize = maxDim / Math.pow(pointCount, 1/3) * 0.5;
-                            material.size = Math.max(0.001, Math.min(idealSize, maxDim * 0.02));
-
-                            console.log(`[4K4D] 3D: ${pointCount} points, bbox size=${maxDim.toFixed(3)}, point size=${material.size.toFixed(4)}`);
+                            console.log(`[4K4D] 3D: ${_cnt} points, bbox=${_maxDim.toFixed(3)}, point size=${_psize.toFixed(4)}`);
                         }
 
                         resolve(points);
