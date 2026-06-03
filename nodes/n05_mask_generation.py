@@ -132,25 +132,49 @@ class FourK4D_MaskGeneration(BaseEasyVolcapNode):
                     script_path = candidate
 
             if script_path:
-                # Use EasyVolcap's RVM script
-                for cam_idx in range(camera_count):
-                    cam_id = f"{cam_idx:02d}"
-                    cam_images = os.path.join(images_dir, cam_id)
-                    cam_masks = os.path.join(masks_dir, cam_id)
-                    os.makedirs(cam_masks, exist_ok=True)
-
-                    result = runner.run(
-                        [
-                            "python", script_path,
-                            "--input", cam_images,
-                            "--output", cam_masks,
-                            "--backbone", rvm_backbone,
-                            "--downsample_ratio", str(rvm_downsample_ratio),
-                        ],
-                        unique_id=unique_id,
-                        timeout_seconds=1800,
+                # EasyVolcap's RVM script processes the WHOLE dataset in a single
+                # pass: it iterates every camera under <data_root>/<image_dir>/ and
+                # writes mattes to <data_root>/<mask_dir>/<cam>/. Its CLI is
+                # --data_root/--image_dir/--mask_dir/--mask_ext/--batch_size; the
+                # backbone (resnet50) and downsample_ratio (0.25) are hardcoded
+                # inside the script, so we don't pass them. It also relies on
+                # sys.path.append('.'), so it must run from the EasyVolcap root.
+                os.makedirs(masks_dir, exist_ok=True)
+                # The RVM script loads the model via torch.hub, which prompts
+                # "Do you trust this repo?" on first use — that read() raises
+                # EOFError in a non-interactive subprocess. Pre-load once with
+                # trust_repo=True to download the weights and add the repo to
+                # torch.hub's trusted list, so the script's plain load() is silent.
+                runner.run(
+                    [
+                        "python", "-c",
+                        "import torch; torch.hub.load('PeterL1n/RobustVideoMatting', "
+                        "'resnet50', trust_repo=True)",
+                    ],
+                    unique_id=unique_id,
+                    timeout_seconds=900,
+                )
+                result = runner.run(
+                    [
+                        "python", script_path,
+                        "--data_root", dataset_root,
+                        "--image_dir", "images",
+                        "--mask_dir", "masks",
+                        "--mask_ext", ".jpg",
+                        "--batch_size", "8",
+                    ],
+                    cwd=easyvolcap_root,
+                    unique_id=unique_id,
+                    timeout_seconds=3600,
+                )
+                report_lines.append(
+                    f"  RVM matting (resnet50, all {camera_count} cameras): "
+                    f"{'OK' if result.success else 'FAILED'}"
+                )
+                if not result.success:
+                    report_lines.append(
+                        "  RVM script failed — see node log for details."
                     )
-                    report_lines.append(f"  Camera {cam_id}: {'OK' if result.success else 'FAILED'}")
             else:
                 # Fallback: try direct RVM import
                 report_lines.append("  Using direct RobustVideoMatting inference...")
