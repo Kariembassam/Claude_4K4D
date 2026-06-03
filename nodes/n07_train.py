@@ -390,13 +390,34 @@ class FourK4D_Train(BaseEasyVolcapNode):
             # Camera selection happens at sampler level, not dataset level.
             "dataloader_cfg.dataset_cfg.view_sample": "[0,None,1]",
             "val_dataloader_cfg.dataset_cfg.view_sample": "[0,None,1]",
-            # Prevent NaN bounds from camera frustum intersection
-            "dataloader_cfg.dataset_cfg.intersect_camera_bounds": "False",
-            "val_dataloader_cfg.dataset_cfg.intersect_camera_bounds": "False",
-            # Prevent runtime vhull computation failures with placeholder masks
-            "dataloader_cfg.dataset_cfg.use_vhulls": "False",
-            "val_dataloader_cfg.dataset_cfg.use_vhulls": "False",
         }
+
+        # Apply the same override to the train and val dataloaders.
+        def _both_cfg(key, val):
+            extra_args[f"dataloader_cfg.dataset_cfg.{key}"] = val
+            extra_args[f"val_dataloader_cfg.dataset_cfg.{key}"] = val
+
+        if dataset_info.get("has_masks"):
+            # Foreground-reconstruction recipe (validated on the 24-cam dome
+            # capture). use_masks GATES use_vhulls in EasyVolcap, so it MUST be
+            # True to get a real visual-hull point-cloud init — otherwise 4K4D
+            # reconstructs the whole scene as a diffuse blob. immask_fill blacks
+            # out the background; immask_crop=False keeps a UNIFORM full-frame
+            # render size (per-view mask-bbox crops force the GL rasterizer to
+            # rebuild its texture every view, starving the GPU to ~5% util).
+            # reload_vhulls forces a fresh carve from the real masks, and
+            # camera-bounds intersection tightens the volume onto the subject.
+            _both_cfg("use_masks", "True")
+            _both_cfg("use_vhulls", "True")
+            _both_cfg("reload_vhulls", "True")
+            _both_cfg("immask_crop", "False")
+            _both_cfg("immask_fill", "True")
+            _both_cfg("intersect_camera_bounds", "True")
+        else:
+            # No real masks (skip_no_masks / full-scene): avoid runtime vhull
+            # computation failures and NaN frustum-intersection bounds.
+            _both_cfg("use_vhulls", "False")
+            _both_cfg("intersect_camera_bounds", "False")
         # Only override frame_sample if a valid range like "0,24,1" is given.
         # Skip "none", empty, or the default "0,None,1" to let the YAML config
         # provide the correct value (EasyVolcap expects a 3-element list).

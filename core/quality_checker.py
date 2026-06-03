@@ -311,6 +311,9 @@ class QualityChecker:
         self,
         dataset_info: dict,
         sync_offsets: dict = None,
+        min_mask_confidence: float = None,
+        max_blur_fraction: float = None,
+        min_sync_quality: float = None,
     ) -> dict:
         """
         Run ALL quality checks and generate a comprehensive report.
@@ -318,6 +321,9 @@ class QualityChecker:
         Args:
             dataset_info: Pipeline dataset info dict
             sync_offsets: Sync alignment data from SyncAligner
+            min_mask_confidence/max_blur_fraction/min_sync_quality: thresholds from
+                the QualityGate node widgets. If None, each check falls back to its
+                DEFAULTS value. (Previously these widgets were ignored entirely.)
 
         Returns:
             dict with overall_pass, checks dict, and summary string
@@ -330,7 +336,9 @@ class QualityChecker:
         # Check 1: Masks
         masks_dir = os.path.join(dataset_root, "masks")
         if dataset_info.get("has_masks"):
-            checks["masks"] = self.check_mask_quality(masks_dir)
+            checks["masks"] = self.check_mask_quality(
+                masks_dir, min_confidence=min_mask_confidence
+            )
         else:
             checks["masks"] = {
                 "passed": True, "score": 0.5,
@@ -340,10 +348,14 @@ class QualityChecker:
 
         # Check 2: Blur/Sharpness
         images_dir = os.path.join(dataset_root, "images")
-        checks["blur"] = self.check_blur_sharpness(images_dir)
+        checks["blur"] = self.check_blur_sharpness(
+            images_dir, max_blur_fraction=max_blur_fraction
+        )
 
         # Check 3: Sync
-        checks["sync"] = self.check_sync_alignment(sync_offsets or {})
+        checks["sync"] = self.check_sync_alignment(
+            sync_offsets or {}, min_quality=min_sync_quality
+        )
 
         # Check 4: Coverage (info only)
         checks["coverage"] = self.check_camera_coverage(dataset_root, camera_count)

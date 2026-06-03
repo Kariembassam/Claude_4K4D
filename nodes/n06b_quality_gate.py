@@ -81,7 +81,12 @@ class FourK4D_QualityGate(BaseEasyVolcapNode):
         self._validate_dataset_info(dataset_info, ["dataset_root"])
 
         checker = QualityChecker()
-        report = checker.generate_report(dataset_info)
+        report = checker.generate_report(
+            dataset_info,
+            min_mask_confidence=min_mask_confidence,
+            max_blur_fraction=max_blur_fraction,
+            min_sync_quality=min_sync_quality,
+        )
 
         gate_passed = report["overall_pass"]
 

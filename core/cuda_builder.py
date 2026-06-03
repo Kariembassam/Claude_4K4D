@@ -145,8 +145,12 @@ class CudaBuilder:
         # Compile from source with --no-build-isolation to use system setuptools
         logger.info("Compiling tinycudann from source (this may take 5-10 minutes)...")
         build_env = self.env.get_cuda_env_vars()
-        # Set CUDA architecture for the target GPU
-        gpu_arch = self.env.gpu_info.get("cuda_arch", "89")
+        # Set CUDA architecture for the target GPU. gpu_info exposes "gpu_arch"
+        # (e.g. "12.0" for RTX 5090 / Blackwell, "8.9" for RTX 4090); TCNN wants
+        # it without the dot ("120"/"89"). The old "cuda_arch" key never existed,
+        # so this silently defaulted to sm_89 and built tinycudann for the wrong
+        # architecture on newer GPUs.
+        gpu_arch = self.env.gpu_info.get("gpu_arch", "8.9").replace(".", "")
         build_env["TCNN_CUDA_ARCHITECTURES"] = str(gpu_arch)
 
         result = self.runner.run_simple(
