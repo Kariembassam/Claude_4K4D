@@ -28,12 +28,13 @@
 <div id="ctl">
   <button id="play">⏸ pause</button>
   <input type="range" id="time" min="0" max="130" value="0" step="1"/>
+  <button id="spin">⟳ auto-rotate</button>
   <button id="reset">reset view</button>
 </div>
 <script>
 // ---- config ----
 const WS_URL = new URLSearchParams(location.search).get('ws') || 'ws://localhost:1024';
-const RW = 640, RH = 640;            // render resolution requested from server (camera H/W)
+const RW = 800, RH = 800;            // render resolution requested from server (camera H/W)
 const FL = RW * 0.82;                // focal length (px) — wider FOV to fit the tall dancer
 const CENTER = [0.0, 0.0, 0.6];      // look-at target (dancer body center, world)
 const NFRAMES = 131;
@@ -44,6 +45,7 @@ document.getElementById('wsurl').textContent = WS_URL;
 let az = Math.PI/2, el = 0.58, radius = 3.33;   // orbit
 let tval = 0.0;                                 // normalized time [0,1]
 let playing = true;
+let spinning = false;                           // auto-rotate
 let frame = 0;
 
 // ---- vec helpers ----
@@ -79,7 +81,7 @@ addEventListener('resize',fit); fit();
 function draw(bitmap){
   const s=Math.min(cv.width/bitmap.width, cv.height/bitmap.height);
   const w=bitmap.width*s, h=bitmap.height*s;
-  ctx.fillStyle='#000'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
   ctx.drawImage(bitmap,(cv.width-w)/2,(cv.height-h)/2,w,h);
 }
 
@@ -97,6 +99,7 @@ const timeEl=document.getElementById('time');
 timeEl.addEventListener('input',()=>{frame=+timeEl.value;tval=frame/(NFRAMES-1);});
 document.getElementById('play').onclick=e=>{playing=!playing;e.target.textContent=playing?'⏸ pause':'▶ play';};
 document.getElementById('reset').onclick=()=>{az=Math.PI/2;el=0.58;radius=3.33;};
+document.getElementById('spin').onclick=e=>{spinning=!spinning;e.target.textContent=spinning?'⟳ stop':'⟳ auto-rotate';};
 
 // ---- websocket loop ----
 let lastReport=performance.now(), frames=0;
@@ -108,9 +111,11 @@ function connect(){
   ws.onerror=()=>{st.textContent='error (is the SSH tunnel up?)';};
   ws.onmessage=async ev=>{
     // server sent a JPEG frame -> draw it, then advance time + send our camera back
-    try{ const bmp=await createImageBitmap(new Blob([ev.data],{type:'image/jpeg'})); draw(bmp); }catch(e){}
+    try{ const bmp=await createImageBitmap(new Blob([ev.data],{type:'image/jpeg'})); draw(bmp); }
+    catch(e){ if(!window._le){window._le=1;console.error('DRAWFAIL type=',Object.prototype.toString.call(ev.data),'len=',ev.data&&(ev.data.byteLength||ev.data.length),e);} }
     if(playing){ frame=(frame+1)%NFRAMES; tval=frame/(NFRAMES-1); timeEl.value=frame; }
     document.getElementById('frm').textContent=frame;
+    if(spinning) az+=0.025;
     frames++; const now=performance.now();
     if(now-lastReport>1000){document.getElementById('fps').textContent=(frames*1000/(now-lastReport)).toFixed(1);frames=0;lastReport=now;}
     sendCamera(ws);
