@@ -182,13 +182,16 @@ app.registerExtension({
                 </p>
             </div>
             <div class="fourk4d-tab-content" id="fourk4d-webgl" style="display:none;">
-                <canvas id="fourk4d-3d-canvas" style="width:100%;height:350px;display:block;"></canvas>
-                <div class="fourk4d-3d-controls" id="fourk4d-3d-controls" style="display:none;">
+                <canvas id="fourk4d-3d-canvas" style="width:100%;height:520px;display:block;background:#1a1a2e;border-radius:4px;"></canvas>
+                <div class="fourk4d-3d-controls" id="fourk4d-3d-controls" style="display:none;align-items:center;gap:6px;">
                     <button id="fourk4d-3d-play">Play</button>
-                    <input type="range" id="fourk4d-3d-slider" min="0" max="0" value="0" step="1">
+                    <input type="range" id="fourk4d-3d-slider" min="0" max="0" value="0" step="1" style="flex:1;">
                     <span class="frame-label" id="fourk4d-3d-frame-label">Frame 0/0</span>
+                    <button id="fourk4d-3d-autorotate" title="Toggle auto-rotate">&#x21BB;</button>
+                    <button id="fourk4d-3d-reset" title="Reset view">&#x2316;</button>
+                    <button id="fourk4d-3d-expand" title="Fullscreen">&#x26F6;</button>
                 </div>
-                <p class="fourk4d-3d-info">Left-click: rotate &bull; Scroll: zoom &bull; Right-click: pan</p>
+                <p class="fourk4d-3d-info">Drag: orbit &bull; Scroll: zoom &bull; Right-drag: pan &bull; &#x21BB; auto-rotate &bull; &#x26F6; fullscreen</p>
             </div>
             <div class="fourk4d-tab-content" id="fourk4d-split" style="display:none;">
                 <p style="color:#888;text-align:center;padding:40px;">Split view</p>
@@ -337,7 +340,7 @@ app.registerExtension({
         // Get actual pixel dimensions
         const rect = canvas.getBoundingClientRect();
         const width = rect.width || 640;
-        const height = 350;
+        const height = rect.height || 520;
         canvas.width = width * window.devicePixelRatio;
         canvas.height = height * window.devicePixelRatio;
         canvas.style.width = width + "px";
@@ -356,10 +359,15 @@ app.registerExtension({
 
         const controls = new THREE.OrbitControls(camera, renderer.domElement);
         controls.enableDamping = true;
-        controls.dampingFactor = 0.12;
-        controls.rotateSpeed = 0.8;
-        controls.zoomSpeed = 1.2;
-        controls.panSpeed = 0.8;
+        controls.dampingFactor = 0.1;
+        controls.rotateSpeed = 0.7;
+        controls.zoomSpeed = 1.1;
+        controls.panSpeed = 0.7;
+        controls.screenSpacePanning = true;   // pan in screen plane (more intuitive)
+        controls.minDistance = 0.05;
+        controls.maxDistance = 50;
+        controls.autoRotateSpeed = 2.0;
+        if ("zoomToCursor" in controls) controls.zoomToCursor = true;
 
         // Lighting (for potential mesh rendering)
         scene.add(new THREE.AmbientLight(0xffffff, 0.8));
@@ -444,6 +452,7 @@ app.registerExtension({
                             camera.updateProjectionMatrix();
                             controls.target.set(0, 0, 0);
                             controls.update();
+                            if (controls.saveState) controls.saveState();  // so the Reset button restores this fit
                             console.log(`[4K4D] 3D: ${_cnt} points, bbox=${_maxDim.toFixed(3)}, point size=${_psize.toFixed(4)}`);
                         }
 
@@ -509,6 +518,39 @@ app.registerExtension({
                 }, 33); // ~30fps
             }
         });
+
+        // Reset view
+        const resetBtn = webglTab.querySelector("#fourk4d-3d-reset");
+        if (resetBtn) resetBtn.addEventListener("click", () => { if (controls.reset) controls.reset(); });
+
+        // Auto-rotate toggle
+        const autoBtn = webglTab.querySelector("#fourk4d-3d-autorotate");
+        if (autoBtn) autoBtn.addEventListener("click", () => {
+            controls.autoRotate = !controls.autoRotate;
+            autoBtn.style.background = controls.autoRotate ? "#3a7" : "";
+        });
+
+        // Fullscreen / expand
+        function resizeRenderer() {
+            const fs = document.fullscreenElement;
+            const w = fs ? window.innerWidth : (canvas.getBoundingClientRect().width || 640);
+            const h = fs ? window.innerHeight : (canvas.getBoundingClientRect().height || 520);
+            if (w > 0 && h > 0) {
+                renderer.setSize(w, h, false);
+                camera.aspect = w / h;
+                camera.updateProjectionMatrix();
+            }
+        }
+        const expandBtn = webglTab.querySelector("#fourk4d-3d-expand");
+        if (expandBtn) expandBtn.addEventListener("click", () => {
+            if (!document.fullscreenElement) {
+                const req = canvas.requestFullscreen || canvas.webkitRequestFullscreen;
+                if (req) req.call(canvas);
+            } else if (document.exitFullscreen) {
+                document.exitFullscreen();
+            }
+        });
+        document.addEventListener("fullscreenchange", () => setTimeout(resizeRenderer, 60));
 
         // Animation loop
         function animate() {
