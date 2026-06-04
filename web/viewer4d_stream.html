@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>4K4D Interactive 4D Viewer (streaming)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;background:#111;color:#ddd;font-family:system-ui,sans-serif;overflow:hidden}
+  #view{position:absolute;inset:0;width:100%;height:100%;cursor:grab;background:#000;image-rendering:auto}
+  #view:active{cursor:grabbing}
+  #hud{position:absolute;top:10px;left:10px;background:rgba(0,0,0,.55);padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.6;max-width:320px}
+  #ctl{position:absolute;bottom:12px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.6);padding:8px 14px;border-radius:10px;display:flex;gap:10px;align-items:center;font-size:13px}
+  button{background:#2b6cb0;color:#fff;border:0;border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px}
+  button:hover{background:#3182ce}
+  input[type=range]{width:240px}
+  #dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#888;margin-right:5px;vertical-align:middle}
+  code{color:#9ae6b4}
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="hud">
+  <div><span id="dot"></span><b>4K4D 4D viewer</b> — <span id="status">connecting…</span></div>
+  <div>server FPS: <span id="fps">–</span> · frame <span id="frm">0</span>/131</div>
+  <div>drag = orbit · wheel = zoom · time slider below</div>
+  <div style="margin-top:6px">ws: <code id="wsurl"></code></div>
+</div>
+<div id="ctl">
+  <button id="play">⏸ pause</button>
+  <input type="range" id="time" min="0" max="130" value="0" step="1"/>
+  <button id="reset">reset view</button>
+</div>
+<script>
+// ---- config ----
+const WS_URL = new URLSearchParams(location.search).get('ws') || 'ws://localhost:1024';
+const RW = 640, RH = 640;            // render resolution requested from server (camera H/W)
+const FL = RW * 0.82;                // focal length (px) — wider FOV to fit the tall dancer
+const CENTER = [0.0, 0.0, 0.6];      // look-at target (dancer body center, world)
+const NFRAMES = 131;
+const BOUNDS = [[-5,-5,-5],[5,5,5]];
+document.getElementById('wsurl').textContent = WS_URL;
+
+// ---- camera state ---- (calibrated to the capture-dome geometry: radius 3.33, elev ~33deg)
+let az = Math.PI/2, el = 0.58, radius = 3.33;   // orbit
+let tval = 0.0;                                 // normalized time [0,1]
+let playing = true;
+let frame = 0;
+
+// ---- vec helpers ----
+const sub=(a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+const dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const norm=a=>{const l=Math.hypot(a[0],a[1],a[2])||1;return [a[0]/l,a[1]/l,a[2]/l];};
+
+function buildCamera(){
+  const ce=Math.cos(el), se=Math.sin(el), ca=Math.cos(az), sa=Math.sin(az);
+  const eye=[CENTER[0]+radius*ce*ca, CENTER[1]+radius*ce*sa, CENTER[2]+radius*se];
+  const fwd=norm(sub(CENTER,eye));          // cam +Z (OpenCV: looks along +Z)
+  const right=norm(cross(fwd,[0,0,1]));     // cam +X
+  const down=cross(fwd,right);              // cam +Y (down, OpenCV)
+  const R=[right,down,fwd];                 // rows = world->cam
+  const T=[[-dot(right,eye)],[-dot(down,eye)],[-dot(fwd,eye)]];
+  return {H:RH,W:RW,
+          K:[[FL,0,RW/2],[0,FL,RH/2],[0,0,1]],
+          R:R, T:T, n:0.02, f:100.0, t:tval, v:0.0, bounds:BOUNDS,
+          mass:0.1, moment_of_inertia:0.1, movement_force:1.0, movement_torque:1.0,
+          movement_speed:1.0, origin:CENTER, world_up:[0,0,1]};
+}
+function sendCamera(ws){
+  if(ws.readyState!==1) return;
+  const s = JSON.stringify(buildCamera());
+  ws.send(pako.deflate(s));               // zlib (server does zlib.decompress)
+}
+
+// ---- canvas ----
+const cv=document.getElementById('view'), ctx=cv.getContext('2d');
+function fit(){cv.width=innerWidth;cv.height=innerHeight;}
+addEventListener('resize',fit); fit();
+function draw(bitmap){
+  const s=Math.min(cv.width/bitmap.width, cv.height/bitmap.height);
+  const w=bitmap.width*s, h=bitmap.height*s;
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.drawImage(bitmap,(cv.width-w)/2,(cv.height-h)/2,w,h);
+}
+
+// ---- interaction ----
+let dragging=false, lx=0, ly=0;
+cv.addEventListener('mousedown',e=>{dragging=true;lx=e.clientX;ly=e.clientY;});
+addEventListener('mouseup',()=>dragging=false);
+addEventListener('mousemove',e=>{
+  if(!dragging)return;
+  az -= (e.clientX-lx)*0.01; el += (e.clientY-ly)*0.01;
+  el=Math.max(-1.45,Math.min(1.45,el)); lx=e.clientX; ly=e.clientY;
+});
+cv.addEventListener('wheel',e=>{e.preventDefault();radius*=Math.exp(e.deltaY*0.001);radius=Math.max(2.0,Math.min(8,radius));},{passive:false});
+const timeEl=document.getElementById('time');
+timeEl.addEventListener('input',()=>{frame=+timeEl.value;tval=frame/(NFRAMES-1);});
+document.getElementById('play').onclick=e=>{playing=!playing;e.target.textContent=playing?'⏸ pause':'▶ play';};
+document.getElementById('reset').onclick=()=>{az=Math.PI/2;el=0.58;radius=3.33;};
+
+// ---- websocket loop ----
+let lastReport=performance.now(), frames=0;
+function connect(){
+  const ws=new WebSocket(WS_URL); ws.binaryType='arraybuffer';
+  const dot=document.getElementById('dot'), st=document.getElementById('status');
+  ws.onopen=()=>{dot.style.background='#48bb78';st.textContent='connected';};
+  ws.onclose=()=>{dot.style.background='#e53e3e';st.textContent='disconnected — retrying';setTimeout(connect,1500);};
+  ws.onerror=()=>{st.textContent='error (is the SSH tunnel up?)';};
+  ws.onmessage=async ev=>{
+    // server sent a JPEG frame -> draw it, then advance time + send our camera back
+    try{ const bmp=await createImageBitmap(new Blob([ev.data],{type:'image/jpeg'})); draw(bmp); }catch(e){}
+    if(playing){ frame=(frame+1)%NFRAMES; tval=frame/(NFRAMES-1); timeEl.value=frame; }
+    document.getElementById('frm').textContent=frame;
+    frames++; const now=performance.now();
+    if(now-lastReport>1000){document.getElementById('fps').textContent=(frames*1000/(now-lastReport)).toFixed(1);frames=0;lastReport=now;}
+    sendCamera(ws);
+  };
+}
+connect();
+</script>
+</body>
+</html>
