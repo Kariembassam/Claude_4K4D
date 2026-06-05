@@ -175,6 +175,7 @@ app.registerExtension({
                 <button class="fourk4d-tab" data-tab="webgl">3D View</button>
                 <button class="fourk4d-tab" data-tab="split">Split</button>
                 <button class="fourk4d-tab" data-tab="iframe">Export</button>
+                <button class="fourk4d-tab" data-tab="live">Live 4D</button>
             </div>
             <div class="fourk4d-tab-content" id="fourk4d-video">
                 <p style="color:#888;text-align:center;padding:40px;">
@@ -199,6 +200,17 @@ app.registerExtension({
             <div class="fourk4d-tab-content" id="fourk4d-iframe" style="display:none;">
                 <textarea readonly style="width:100%;height:100px;background:#2a2a2a;color:#fff;border:1px solid #444;font-family:monospace;font-size:12px;padding:8px;"></textarea>
             </div>
+            <div class="fourk4d-tab-content" id="fourk4d-live" style="display:none;">
+                <canvas id="fourk4d-live-canvas" style="width:100%;height:520px;display:block;background:#000;border-radius:4px;cursor:grab;"></canvas>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
+                    <span id="fourk4d-live-status" style="font-size:11px;color:#888;min-width:90px;">live: idle</span>
+                    <button id="fourk4d-live-play">Pause</button>
+                    <input type="range" id="fourk4d-live-slider" min="0" max="130" value="0" step="1" style="flex:1;">
+                    <span id="fourk4d-live-frame" style="font-size:11px;color:#888;">0/131</span>
+                    <button id="fourk4d-live-reset" title="Reset view">&#x2316;</button>
+                </div>
+                <p class="fourk4d-3d-info">Real-time 4D &mdash; drag: orbit &bull; scroll: zoom &bull; plays at 30fps. Needs the render-server (serve.sh / WebSocketServer on :1024) on the ComfyUI host.</p>
+            </div>
         `;
 
         // Tab switching
@@ -210,6 +222,10 @@ app.registerExtension({
                 const tabId = `fourk4d-${btn.dataset.tab}`;
                 const tabEl = container.querySelector(`#${tabId}`);
                 if (tabEl) tabEl.style.display = "block";
+                if (btn.dataset.tab === "live" && !node._liveInit) {
+                    node._liveInit = true;
+                    this._initLive4D(container);
+                }
             });
         });
 
@@ -220,6 +236,76 @@ app.registerExtension({
         widget.computeSize = () => [node.size[0], 500];
 
         node._viewerContainer = container;
+    },
+
+    // Live 4D: stream the EasyVolcap render-server through ComfyUI's /4k4d/stream proxy
+    _initLive4D(container) {
+        const cv = container.querySelector("#fourk4d-live-canvas");
+        const ctx = cv.getContext("2d");
+        const statusEl = container.querySelector("#fourk4d-live-status");
+        const playBtn = container.querySelector("#fourk4d-live-play");
+        const slider = container.querySelector("#fourk4d-live-slider");
+        const frameEl = container.querySelector("#fourk4d-live-frame");
+        const resetBtn = container.querySelector("#fourk4d-live-reset");
+
+        // config — calibrated to the capture dome
+        const RW = 800, RH = 800, FL = RW * 0.82;
+        const CENTER = [0.0, 0.0, 0.6], NFRAMES = 131;
+        const BOUNDS = [[-1.4, -1.4, -1.4], [1.4, 1.4, 1.7]];   // cull off-surface floaters
+        let az = Math.PI / 2, el = 0.58, radius = 3.33, tval = 0, frame = 0, playing = true;
+
+        // minimal zlib (single stored block) so the server's zlib.decompress() accepts our camera
+        const adler32 = d => { let a = 1, b = 0; for (let i = 0; i < d.length; i++) { a = (a + d[i]) % 65521; b = (b + a) % 65521; } return ((b << 16) | a) >>> 0; };
+        const zlibStore = str => {
+            const d = new TextEncoder().encode(str), n = d.length, o = new Uint8Array(7 + n + 4);
+            o[0] = 0x78; o[1] = 0x01; o[2] = 0x01; o[3] = n & 0xff; o[4] = (n >> 8) & 0xff; o[5] = (~n) & 0xff; o[6] = ((~n) >> 8) & 0xff;
+            o.set(d, 7); const ad = adler32(d); o[7 + n] = (ad >>> 24) & 0xff; o[8 + n] = (ad >>> 16) & 0xff; o[9 + n] = (ad >>> 8) & 0xff; o[10 + n] = ad & 0xff;
+            return o;
+        };
+        const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]], dot = (a, b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
+        const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+        const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
+        const buildCamera = () => {
+            const ce = Math.cos(el), se = Math.sin(el), ca = Math.cos(az), sa = Math.sin(az);
+            const eye = [CENTER[0]+radius*ce*ca, CENTER[1]+radius*ce*sa, CENTER[2]+radius*se];
+            const fwd = norm(sub(CENTER, eye)), right = norm(cross(fwd, [0,0,1])), down = cross(fwd, right);
+            return { H: RH, W: RW, K: [[FL,0,RW/2],[0,FL,RH/2],[0,0,1]], R: [right, down, fwd],
+                T: [[-dot(right,eye)],[-dot(down,eye)],[-dot(fwd,eye)]], n: 0.02, f: 100.0, t: tval, v: 0.0,
+                bounds: BOUNDS, mass: 0.1, moment_of_inertia: 0.1, movement_force: 1.0, movement_torque: 1.0,
+                movement_speed: 1.0, origin: CENTER, world_up: [0,0,1] };
+        };
+        const fit = () => { const r = cv.getBoundingClientRect(); cv.width = r.width || 800; cv.height = r.height || 520; };
+        fit();
+        const draw = bmp => {
+            const s = Math.min(cv.width/bmp.width, cv.height/bmp.height), w = bmp.width*s, h = bmp.height*s;
+            ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
+            ctx.save(); ctx.translate((cv.width-w)/2, (cv.height-h)/2+h); ctx.scale(1, -1);  // server flips its render
+            ctx.drawImage(bmp, 0, 0, w, h); ctx.restore();
+        };
+        let drag = false, lx = 0, ly = 0;
+        cv.addEventListener("mousedown", e => { drag = true; lx = e.clientX; ly = e.clientY; });
+        window.addEventListener("mouseup", () => { drag = false; });
+        window.addEventListener("mousemove", e => { if (!drag) return; az -= (e.clientX-lx)*0.01; el = Math.max(-1.45, Math.min(1.45, el+(e.clientY-ly)*0.01)); lx = e.clientX; ly = e.clientY; });
+        cv.addEventListener("wheel", e => { e.preventDefault(); radius = Math.max(2.0, Math.min(8, radius*Math.exp(e.deltaY*0.001))); }, { passive: false });
+        slider.addEventListener("input", () => { frame = +slider.value; tval = frame/(NFRAMES-1); });
+        playBtn.addEventListener("click", () => { playing = !playing; playBtn.textContent = playing ? "Pause" : "Play"; });
+        resetBtn.addEventListener("click", () => { az = Math.PI/2; el = 0.58; radius = 3.33; });
+
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        const url = `${proto}://${location.host}/4k4d/stream`;
+        const connect = () => {
+            const ws = new WebSocket(url); ws.binaryType = "arraybuffer";
+            ws.onopen = () => { statusEl.textContent = "live: connected"; statusEl.style.color = "#48bb78"; };
+            ws.onclose = () => { statusEl.textContent = "live: disconnected — retry"; statusEl.style.color = "#e53e3e"; setTimeout(connect, 1500); };
+            ws.onerror = () => { statusEl.textContent = "live: error (render-server up?)"; };
+            ws.onmessage = async ev => {
+                try { const bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); draw(bmp); } catch (e) {}
+                if (ws.readyState === 1) ws.send(zlibStore(JSON.stringify(buildCamera())));
+            };
+        };
+        connect();
+        if (container._liveTimer) clearInterval(container._liveTimer);
+        container._liveTimer = setInterval(() => { if (playing) { frame = (frame+1)%NFRAMES; tval = frame/(NFRAMES-1); slider.value = frame; frameEl.textContent = `${frame}/${NFRAMES}`; } }, 1000/30);
     },
 
     _addStatusWidget(node) {

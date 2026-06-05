@@ -29,6 +29,38 @@ try:
             return web.Response(status=404, text="File not found")
         return web.FileResponse(filepath)
 
+    import asyncio
+    import aiohttp
+
+    @PromptServer.instance.routes.get("/4k4d/stream")
+    async def fourk4d_stream_proxy(request):
+        """Bridge a browser websocket <-> the EasyVolcap WebSocketServer render-server
+        (default ws://127.0.0.1:1024) so the in-ComfyUI Live-4D viewer streams frames
+        SAME-ORIGIN (via ComfyUI's own http/https host) — no separate port/tunnel and no
+        mixed-content. Transparent byte pump: server sends JPEG, client sends zlib(JSON camera)."""
+        target = request.query.get("target", "ws://127.0.0.1:1024")
+        ws_client = web.WebSocketResponse(max_msg_size=0)
+        await ws_client.prepare(request)
+
+        async def pump(src, dst):
+            async for m in src:
+                if m.type == aiohttp.WSMsgType.BINARY:
+                    await dst.send_bytes(m.data)
+                elif m.type == aiohttp.WSMsgType.TEXT:
+                    await dst.send_str(m.data)
+                else:
+                    break
+
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.ws_connect(target, max_msg_size=0) as ws_up:
+                    await asyncio.gather(pump(ws_up, ws_client), pump(ws_client, ws_up))
+        except Exception as e:
+            logger.warning(f"4k4d stream proxy error ({target}): {e}")
+            if not ws_client.closed:
+                await ws_client.close()
+        return ws_client
+
 except Exception:
     pass  # Not running inside ComfyUI server context
 
