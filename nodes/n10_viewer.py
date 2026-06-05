@@ -69,7 +69,7 @@ try:
     _EXPORT_OUT = os.path.join(os.path.dirname(__file__), "..", "data", "dome_dancer", "render")
 
     async def _do_export(cam, mp4, log_path, frames_dir, nframes):
-        import os as _os, glob as _glob, json as _json, zlib as _zlib, subprocess as _sub
+        import os as _os, glob as _glob, json as _json, zlib as _zlib, subprocess as _sub, asyncio as _aio
         def logw(m):
             with open(log_path, "a") as f:
                 f.write(m + "\n")
@@ -81,21 +81,41 @@ try:
             return {"H": H, "W": W, "K": K, "R": R, "T": T, "n": 0.02, "f": 100.0, "t": t, "v": 0.0,
                     "bounds": bounds, "mass": 0.1, "moment_of_inertia": 0.1, "movement_force": 1.0,
                     "movement_torque": 1.0, "movement_speed": 1.0, "origin": [0, 0, 0.13], "world_up": [0, 0, 1]}
+        def cmsg(t):
+            return _zlib.compress(_json.dumps(camt(t)).encode("ascii"))
+        async def wait_fresh(ws, msg, prev, timeout=6.0):
+            # The render-server runs a continuous render_loop (rasterizes self.camera, only
+            # ~2-3 fps at 1080) decoupled from the server_loop (ships the LATEST rendered
+            # image). So a frame received right after we change the time is usually a STALE
+            # render of the previous time; blasting a fixed number of "settle" sends drains
+            # stale frames faster than the GPU produces fresh ones -> duplicate frames ->
+            # choppy video. Instead hold this exact camera+time and return the first frame
+            # whose bytes DIFFER from prev (a genuinely fresh render of this time). Encoding
+            # is deterministic, so identical renders compare equal. Timeout (e.g. a briefly
+            # static pose) -> return the latest frame seen.
+            t0 = _time.time(); data = prev
+            while _time.time() - t0 < timeout:
+                await ws.send_bytes(msg)
+                m = await ws.receive()
+                d = m.data
+                if isinstance(d, (bytes, bytearray)):
+                    if prev is None or d != prev:
+                        return d
+                    data = d
+                await _aio.sleep(0.02)
+            return data
         try:
             logw("rendering 0/%d" % nframes)
             async with aiohttp.ClientSession() as s:
                 async with s.ws_connect("ws://127.0.0.1:1024", max_msg_size=0) as ws:
-                    await ws.receive()  # initial default-camera frame
+                    m0 = await ws.receive()  # initial default-camera frame
+                    prev = m0.data if isinstance(m0.data, (bytes, bytearray)) else None
                     for i in range(nframes):
-                        msg = _zlib.compress(_json.dumps(camt(i / (nframes - 1))).encode("ascii"))
-                        last = None
-                        for _k in range(3):  # settle the decoupled render loop, save the 3rd
-                            await ws.send_bytes(msg)
-                            m = await ws.receive()
-                            last = m.data
+                        # wait for a genuinely fresh render of this exact timestep (no dupes)
+                        prev = await wait_fresh(ws, cmsg(i / (nframes - 1)), prev)
                         with open("%s/f%04d.jpg" % (frames_dir, i), "wb") as f:
-                            f.write(last)
-                        if i % 20 == 0:
+                            f.write(prev)
+                        if i % 10 == 0:
                             logw("rendering %d/%d" % (i, nframes))
             logw("rendering %d/%d" % (nframes, nframes))
             _os.makedirs(_os.path.dirname(mp4), exist_ok=True)

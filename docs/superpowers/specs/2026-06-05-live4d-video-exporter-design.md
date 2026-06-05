@@ -21,8 +21,12 @@ high-quality MP4 of the full 131-frame performance rendered from that exact came
 - **Backend (`n10_viewer.py`): new `POST /4k4d/export_video` route.** Reads
   `{R,T,K,bounds,H,W,nframes}`, kicks off a background `asyncio` task (returns immediately
   with `{mp4_url, log_url}` to avoid request timeout), which: connects to the render-server
-  (`ws://127.0.0.1:1024`), renders each frame at the fixed camera varying only time (settle-3
-  for clean frames), saves the **raw JPEGs**, then `ffmpeg -vf vflip` (the server render is
+  (`ws://127.0.0.1:1024`), renders each frame at the fixed camera varying only time, **holding
+  each camera until the returned JPEG bytes actually change** before saving (the server's
+  render loop is decoupled from the socket and runs slower at 1080, so a fixed "settle" count
+  drains stale frames faster than the GPU makes fresh ones → only ~5 unique frames out of 131
+  → choppy; encoding is deterministic, so waiting for a byte change yields one genuinely fresh
+  render per timestep = 131 distinct frames), saves the **raw JPEGs**, then `ffmpeg -vf vflip` (the server render is
   flipped) → H.264 MP4 under the dataset `render/` dir. Progress + `EXPORT DONE` written to
   the log.
 - **Render-server:** bumped to `window_size=[1080,1080]` so both Live 4D and the export are
