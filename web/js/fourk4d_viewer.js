@@ -249,7 +249,7 @@ app.registerExtension({
         const resetBtn = container.querySelector("#fourk4d-live-reset");
 
         // config — calibrated to the capture dome
-        const RW = 800, RH = 800, FL = RW * 0.82;
+        const RW = 512, RH = 512, FL = RW * 0.82;   // lower res -> faster render readback/transfer
         const CENTER = [0.0, 0.0, 0.6], NFRAMES = 131;
         const BOUNDS = [[-1.4, -1.4, -1.4], [1.4, 1.4, 1.7]];   // cull off-surface floaters
         let az = Math.PI / 2, el = 0.58, radius = 3.33, tval = 0, frame = 0, playing = true;
@@ -301,12 +301,12 @@ app.registerExtension({
             ws.onerror = () => { statusEl.textContent = "live: error (render-server up?)"; };
             ws.onmessage = async ev => {
                 try { const bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); draw(bmp); } catch (e) {}
+                // advance ON each rendered frame -> never skips, plays every frame in order, loops cleanly
+                if (playing) { frame = (frame + 1) % NFRAMES; tval = frame / (NFRAMES - 1); slider.value = frame; frameEl.textContent = `${frame}/${NFRAMES}`; }
                 if (ws.readyState === 1) ws.send(zlibStore(JSON.stringify(buildCamera())));
             };
         };
         connect();
-        if (container._liveTimer) clearInterval(container._liveTimer);
-        container._liveTimer = setInterval(() => { if (playing) { frame = (frame+1)%NFRAMES; tval = frame/(NFRAMES-1); slider.value = frame; frameEl.textContent = `${frame}/${NFRAMES}`; } }, 1000/30);
     },
 
     _addStatusWidget(node) {
