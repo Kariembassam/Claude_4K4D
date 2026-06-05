@@ -38,7 +38,7 @@ const RW = 800, RH = 800;            // render resolution requested from server 
 const FL = RW * 0.82;                // focal length (px) — wider FOV to fit the tall dancer
 const CENTER = [0.0, 0.0, 0.6];      // look-at target (dancer body center, world)
 const NFRAMES = 131;
-const BOUNDS = [[-5,-5,-5],[5,5,5]];
+const BOUNDS = [[-1.4,-1.4,-1.4],[1.4,1.4,1.7]];  // tight to dancer extent (cull far floaters)
 document.getElementById('wsurl').textContent = WS_URL;
 
 // ---- camera state ---- (calibrated to the capture-dome geometry: radius 3.33, elev ~33deg)
@@ -81,8 +81,10 @@ addEventListener('resize',fit); fit();
 function draw(bitmap){
   const s=Math.min(cv.width/bitmap.width, cv.height/bitmap.height);
   const w=bitmap.width*s, h=bitmap.height*s;
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,cv.width,cv.height);
-  ctx.drawImage(bitmap,(cv.width-w)/2,(cv.height-h)/2,w,h);
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,cv.width,cv.height);
+  // server vertically flips its render -> flip back here so the dancer is upright
+  ctx.save(); ctx.translate((cv.width-w)/2,(cv.height-h)/2+h); ctx.scale(1,-1);
+  ctx.drawImage(bitmap,0,0,w,h); ctx.restore();
 }
 
 // ---- interaction ----
