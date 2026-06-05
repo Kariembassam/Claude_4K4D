@@ -208,6 +208,7 @@ app.registerExtension({
                     <input type="range" id="fourk4d-live-slider" min="0" max="130" value="0" step="1" style="flex:1;">
                     <span id="fourk4d-live-frame" style="font-size:11px;color:#888;">0/131</span>
                     <button id="fourk4d-live-reset" title="Reset view">&#x2316;</button>
+                    <button id="fourk4d-live-export" title="Render a high-quality MP4 of the full performance from this exact angle">&#x2913; Export MP4</button>
                 </div>
                 <p class="fourk4d-3d-info">Real-time 4D &mdash; drag: orbit &bull; scroll: zoom &bull; plays at 30fps. Needs the render-server (serve.sh / WebSocketServer on :1024) on the ComfyUI host.</p>
             </div>
@@ -247,6 +248,7 @@ app.registerExtension({
         const slider = container.querySelector("#fourk4d-live-slider");
         const frameEl = container.querySelector("#fourk4d-live-frame");
         const resetBtn = container.querySelector("#fourk4d-live-reset");
+        const exportBtn = container.querySelector("#fourk4d-live-export");
 
         // config — calibrated to the capture dome
         const RW = 512, RH = 512, FL = RW * 0.82;   // lower res -> faster render readback/transfer
@@ -291,6 +293,32 @@ app.registerExtension({
         slider.addEventListener("input", () => { playIdx = +slider.value; });
         playBtn.addEventListener("click", () => { playing = !playing; playBtn.textContent = playing ? "Pause" : "Play"; });
         resetBtn.addEventListener("click", () => { az = Math.PI/2; el = 0.58; radius = 3.33; invalidate(); });
+        // Export a high-quality MP4 of the whole performance from the CURRENT orbit angle.
+        exportBtn.addEventListener("click", async () => {
+            const RES = 1080;
+            const base = buildCamera();   // current orbit extrinsics (R/T) + tight bounds
+            const cam = { H: RES, W: RES, K: [[RES*0.82,0,RES/2],[0,RES*0.82,RES/2],[0,0,1]],
+                          R: base.R, T: base.T, bounds: base.bounds, nframes: NFRAMES };
+            streaming = false; if (playTimer) { clearInterval(playTimer); playTimer = null; }  // free the render-server for the export
+            setStatus("export: starting…", "#f6ad55");
+            let info;
+            try {
+                const r = await fetch("/4k4d/export_video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cam) });
+                info = await r.json();
+            } catch (e) { setStatus("export: request failed", "#e53e3e"); return; }
+            const poll = setInterval(async () => {
+                let txt = ""; try { txt = await (await fetch(info.log_url + "&_=" + Date.now())).text(); } catch (e) {}
+                const m = txt.match(/rendering \d+\/\d+/g);
+                if (m) setStatus("export: " + m[m.length - 1], "#f6ad55");
+                if (/EXPORT DONE/.test(txt)) {
+                    clearInterval(poll); setStatus("export: done ✓ — downloading", "#48bb78");
+                    const a = document.createElement("a"); a.href = info.mp4_url; a.download = "dome_dancer_4d.mp4";
+                    document.body.appendChild(a); a.click(); a.remove();
+                    window.app.api.dispatchEvent(new CustomEvent("4k4d.viewer.load", { detail: { mp4_path: info.mp4_path, autoplay: true, loop: true } }));
+                    setTimeout(invalidate, 800);   // resume the live view
+                } else if (/EXPORT (FAIL|ERROR)/.test(txt)) { clearInterval(poll); setStatus("export: failed", "#e53e3e"); setTimeout(invalidate, 800); }
+            }, 1500);
+        });
 
         const proto = location.protocol === "https:" ? "wss" : "ws";
         const url = `${proto}://${location.host}/4k4d/stream`;

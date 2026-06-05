@@ -61,6 +61,71 @@ try:
                 await ws_client.close()
         return ws_client
 
+    # ---- Live-4D video exporter: render the full performance from the user's chosen
+    #      orbit camera (rasterized-clean), encode an MP4, serve it for download ----
+    import time as _time
+    from urllib.parse import quote as _quote
+
+    _EXPORT_OUT = os.path.join(os.path.dirname(__file__), "..", "data", "dome_dancer", "render")
+
+    async def _do_export(cam, mp4, log_path, frames_dir, nframes):
+        import os as _os, glob as _glob, json as _json, zlib as _zlib, subprocess as _sub
+        def logw(m):
+            with open(log_path, "a") as f:
+                f.write(m + "\n")
+        _os.makedirs(frames_dir, exist_ok=True)
+        for f in _glob.glob(frames_dir + "/*.jpg"):
+            _os.remove(f)
+        H, W, K, R, T, bounds = cam["H"], cam["W"], cam["K"], cam["R"], cam["T"], cam["bounds"]
+        def camt(t):
+            return {"H": H, "W": W, "K": K, "R": R, "T": T, "n": 0.02, "f": 100.0, "t": t, "v": 0.0,
+                    "bounds": bounds, "mass": 0.1, "moment_of_inertia": 0.1, "movement_force": 1.0,
+                    "movement_torque": 1.0, "movement_speed": 1.0, "origin": [0, 0, 0.13], "world_up": [0, 0, 1]}
+        try:
+            logw("rendering 0/%d" % nframes)
+            async with aiohttp.ClientSession() as s:
+                async with s.ws_connect("ws://127.0.0.1:1024", max_msg_size=0) as ws:
+                    await ws.receive()  # initial default-camera frame
+                    for i in range(nframes):
+                        msg = _zlib.compress(_json.dumps(camt(i / (nframes - 1))).encode("ascii"))
+                        last = None
+                        for _k in range(3):  # settle the decoupled render loop, save the 3rd
+                            await ws.send_bytes(msg)
+                            m = await ws.receive()
+                            last = m.data
+                        with open("%s/f%04d.jpg" % (frames_dir, i), "wb") as f:
+                            f.write(last)
+                        if i % 20 == 0:
+                            logw("rendering %d/%d" % (i, nframes))
+            logw("rendering %d/%d" % (nframes, nframes))
+            _os.makedirs(_os.path.dirname(mp4), exist_ok=True)
+            _sub.run(["ffmpeg", "-y", "-framerate", "30", "-i", "%s/f%%04d.jpg" % frames_dir,
+                      "-vf", "vflip", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", mp4], check=False)
+            logw("EXPORT DONE" if _os.path.isfile(mp4) else "EXPORT FAIL")
+        except Exception as e:
+            logw("EXPORT ERROR " + str(e))
+
+    @PromptServer.instance.routes.post("/4k4d/export_video")
+    async def export_video(request):
+        """Render the 131-frame performance at the posted (fixed) camera, varying time,
+        through the render-server; encode an MP4. Non-blocking: returns URLs immediately,
+        client polls the log."""
+        body = await request.json()
+        nframes = int(body.get("nframes", 131))
+        cam = {"H": int(body["H"]), "W": int(body["W"]), "K": body["K"], "R": body["R"],
+               "T": body["T"], "bounds": body["bounds"]}
+        job = str(int(_time.time()))
+        mp4 = os.path.abspath(os.path.join(_EXPORT_OUT, "export_%s.mp4" % job))
+        log_path = "/tmp/4k4d_export_%s.log" % job
+        frames_dir = "/tmp/4k4d_export_%s" % job
+        open(log_path, "w").close()
+        asyncio.create_task(_do_export(cam, mp4, log_path, frames_dir, nframes))
+        return web.json_response({
+            "mp4_path": mp4, "log_path": log_path,
+            "mp4_url": "/4k4d/view?path=" + _quote(mp4),
+            "log_url": "/4k4d/view?path=" + _quote(log_path),
+        })
+
 except Exception:
     pass  # Not running inside ComfyUI server context
 
