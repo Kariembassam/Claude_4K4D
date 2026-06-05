@@ -201,16 +201,18 @@ app.registerExtension({
                 <textarea readonly style="width:100%;height:100px;background:#2a2a2a;color:#fff;border:1px solid #444;font-family:monospace;font-size:12px;padding:8px;"></textarea>
             </div>
             <div class="fourk4d-tab-content" id="fourk4d-live" style="display:none;">
-                <canvas id="fourk4d-live-canvas" style="width:100%;height:520px;display:block;background:#000;border-radius:4px;cursor:grab;"></canvas>
-                <div style="display:flex;align-items:center;gap:6px;margin-top:4px;">
-                    <span id="fourk4d-live-status" style="font-size:11px;color:#888;min-width:90px;">live: idle</span>
-                    <button id="fourk4d-live-play">Pause</button>
-                    <input type="range" id="fourk4d-live-slider" min="0" max="130" value="0" step="1" style="flex:1;">
-                    <span id="fourk4d-live-frame" style="font-size:11px;color:#888;">0/131</span>
-                    <button id="fourk4d-live-reset" title="Reset view">&#x2316;</button>
-                    <button id="fourk4d-live-export" title="Render a high-quality MP4 of the full performance from this exact angle">&#x2913; Export MP4</button>
+                <div style="position:relative;width:100%;">
+                    <canvas id="fourk4d-live-canvas" style="width:100%;height:460px;display:block;background:#000;border-radius:4px;cursor:grab;"></canvas>
+                    <div style="position:absolute;left:6px;right:6px;bottom:6px;display:flex;align-items:center;gap:6px;background:rgba(0,0,0,0.6);padding:6px 8px;border-radius:8px;">
+                        <span id="fourk4d-live-status" style="font-size:11px;color:#bbb;min-width:90px;">live: idle</span>
+                        <button id="fourk4d-live-play">Pause</button>
+                        <input type="range" id="fourk4d-live-slider" min="0" max="130" value="0" step="1" style="flex:1;">
+                        <span id="fourk4d-live-frame" style="font-size:11px;color:#bbb;">0/131</span>
+                        <button id="fourk4d-live-reset" title="Reset view">&#x2316;</button>
+                        <button id="fourk4d-live-export" title="Render a high-quality MP4 of the full performance from this exact angle (available once buffering completes)" disabled style="opacity:0.5;">&#x2913; Export (buffering&hellip;)</button>
+                    </div>
                 </div>
-                <p class="fourk4d-3d-info">Real-time 4D &mdash; drag: orbit &bull; scroll: zoom &bull; plays at 30fps. Needs the render-server (serve.sh / WebSocketServer on :1024) on the ComfyUI host.</p>
+                <p class="fourk4d-3d-info">Real-time 4D &mdash; drag: orbit &bull; scroll: zoom &bull; plays at 30fps. Export unlocks once all 131 frames are cached. Needs the render-server (serve.sh / WebSocketServer on :1024) on the ComfyUI host.</p>
             </div>
         `;
 
@@ -295,10 +297,12 @@ app.registerExtension({
         resetBtn.addEventListener("click", () => { az = Math.PI/2; el = 0.58; radius = 3.33; invalidate(); });
         // Export a high-quality MP4 of the whole performance from the CURRENT orbit angle.
         exportBtn.addEventListener("click", async () => {
+            if (exportBtn.disabled) return;   // gated until the cache is fully built — no contention with buffering
             const RES = 1080;
             const base = buildCamera();   // current orbit extrinsics (R/T) + tight bounds
             const cam = { H: RES, W: RES, K: [[RES*0.82,0,RES/2],[0,RES*0.82,RES/2],[0,0,1]],
                           R: base.R, T: base.T, bounds: base.bounds, nframes: NFRAMES };
+            exportBtn.disabled = true; exportBtn.style.opacity = "0.5"; exportBtn.innerHTML = "&#x2913; Exporting&hellip;";
             streaming = false; if (playTimer) { clearInterval(playTimer); playTimer = null; }  // free the render-server for the export
             setStatus("export: starting…", "#f6ad55");
             let info;
@@ -331,12 +335,14 @@ app.registerExtension({
         const reqCamera = () => { tval = (sentCount % NFRAMES) / (NFRAMES - 1); sentCount++; if (ws && ws.readyState === 1) ws.send(zlibStore(JSON.stringify(buildCamera()))); };
         const startPlay = () => {
             streaming = false; setStatus("live: playing 30fps", "#48bb78");
+            if (exportBtn) { exportBtn.disabled = false; exportBtn.style.opacity = "1"; exportBtn.innerHTML = "&#x2913; Export MP4"; }   // cache complete -> export unlocked
             if (playTimer) clearInterval(playTimer);
             playTimer = setInterval(() => { if (!playing) return; const b = cache[playIdx]; if (b) draw(b); slider.value = playIdx; frameEl.textContent = `${playIdx}/${NFRAMES}`; playIdx = (playIdx + 1) % NFRAMES; }, 1000 / 30);
         };
         function invalidate() {   // camera changed -> rebuild cache for the new view
             cache = new Array(NFRAMES).fill(null); recvCount = 0; sentCount = 0;
             if (playTimer) { clearInterval(playTimer); playTimer = null; }
+            if (exportBtn) { exportBtn.disabled = true; exportBtn.style.opacity = "0.5"; exportBtn.innerHTML = "&#x2913; Export (buffering&hellip;)"; }   // lock export while re-buffering
             setStatus(`live: buffering 0/${NFRAMES}`);
             if (!streaming) { streaming = true; reqCamera(); }
         }
