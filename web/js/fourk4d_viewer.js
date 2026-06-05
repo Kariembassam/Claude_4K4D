@@ -478,6 +478,18 @@ app.registerExtension({
         controls.autoRotateSpeed = 2.0;
         if ("zoomToCursor" in controls) controls.zoomToCursor = true;
 
+        // keep the renderer matched to the canvas size (node resize was blanking the view)
+        if (node._threeResizeObserver) node._threeResizeObserver.disconnect();
+        node._threeResizeObserver = new ResizeObserver(() => {
+            const r = canvas.getBoundingClientRect();
+            if (r.width > 1 && r.height > 1) {
+                renderer.setSize(r.width, r.height, false);
+                camera.aspect = r.width / r.height;
+                camera.updateProjectionMatrix();
+            }
+        });
+        node._threeResizeObserver.observe(canvas);
+
         // Lighting (for potential mesh rendering)
         scene.add(new THREE.AmbientLight(0xffffff, 0.8));
         const dirLight = new THREE.DirectionalLight(0xffffff, 0.5);
@@ -492,6 +504,7 @@ app.registerExtension({
         let isPlaying = false;
         let playInterval = null;
         let hasSetCamera = false;
+        let sharedCenter = null;   // one center for ALL frames (fixes per-frame drift)
 
         // UI elements
         const controlsDiv = webglTab.querySelector("#fourk4d-3d-controls");
@@ -546,7 +559,10 @@ app.registerExtension({
 
                         const center = new THREE.Vector3();
                         bbox.getCenter(center);
-                        points.position.set(-center.x, -center.y, -center.z);
+                        // anchor every frame to ONE shared center (frame 0's) so the dancer keeps
+                        // its real motion but doesn't drift/jitter from per-frame bbox outliers
+                        if (!sharedCenter) sharedCenter = center.clone();
+                        points.position.set(-sharedCenter.x, -sharedCenter.y, -sharedCenter.z);
 
                         loadedFrames[index] = points;
                         frameGroup.add(points);
