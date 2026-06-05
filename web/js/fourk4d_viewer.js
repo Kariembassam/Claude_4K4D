@@ -283,10 +283,11 @@ app.registerExtension({
             ctx.drawImage(bmp, 0, 0, w, h); ctx.restore();
         };
         let drag = false, lx = 0, ly = 0;
-        cv.addEventListener("mousedown", e => { drag = true; lx = e.clientX; ly = e.clientY; });
-        window.addEventListener("mouseup", () => { drag = false; });
-        window.addEventListener("mousemove", e => { if (!drag) return; az -= (e.clientX-lx)*0.01; el = Math.max(-1.45, Math.min(1.45, el+(e.clientY-ly)*0.01)); lx = e.clientX; ly = e.clientY; });
-        cv.addEventListener("wheel", e => { e.preventDefault(); radius = Math.max(2.0, Math.min(8, radius*Math.exp(e.deltaY*0.001))); }, { passive: false });
+        // stopPropagation so ComfyUI/LiteGraph doesn't drag the NODE while we orbit
+        cv.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); drag = true; lx = e.clientX; ly = e.clientY; cv.setPointerCapture(e.pointerId); });
+        cv.addEventListener("pointerup", e => { drag = false; });
+        cv.addEventListener("pointermove", e => { if (!drag) return; e.stopPropagation(); az -= (e.clientX-lx)*0.01; el = Math.max(-1.45, Math.min(1.45, el+(e.clientY-ly)*0.01)); lx = e.clientX; ly = e.clientY; });
+        cv.addEventListener("wheel", e => { e.preventDefault(); e.stopPropagation(); radius = Math.max(2.0, Math.min(8, radius*Math.exp(e.deltaY*0.001))); }, { passive: false });
         slider.addEventListener("input", () => { frame = +slider.value; tval = frame/(NFRAMES-1); });
         playBtn.addEventListener("click", () => { playing = !playing; playBtn.textContent = playing ? "Pause" : "Play"; });
         resetBtn.addEventListener("click", () => { az = Math.PI/2; el = 0.58; radius = 3.33; });
