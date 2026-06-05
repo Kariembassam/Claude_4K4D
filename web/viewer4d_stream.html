@@ -113,7 +113,8 @@ function connect(){
     // server sent a JPEG frame -> draw it, then advance time + send our camera back
     try{ const bmp=await createImageBitmap(new Blob([ev.data],{type:'image/jpeg'})); draw(bmp); }
     catch(e){ if(!window._le){window._le=1;console.error('DRAWFAIL type=',Object.prototype.toString.call(ev.data),'len=',ev.data&&(ev.data.byteLength||ev.data.length),e);} }
-    if(playing){ frame=(frame+1)%NFRAMES; tval=frame/(NFRAMES-1); timeEl.value=frame; }
+    // frame/time advance is driven by the 30 fps wall-clock timer below (not per-render),
+    // so playback speed stays correct (131 frames @30fps ≈ 4.4 s) regardless of render fps.
     document.getElementById('frm').textContent=frame;
     if(spinning) az+=0.025;
     frames++; const now=performance.now();
@@ -122,6 +123,8 @@ function connect(){
   };
 }
 connect();
+// 30 fps wall-clock playback — advances the timestep at the capture rate, independent of render fps
+setInterval(()=>{ if(playing){ frame=(frame+1)%NFRAMES; tval=frame/(NFRAMES-1); timeEl.value=frame; } }, 1000/30);
 </script>
 </body>
 </html>
