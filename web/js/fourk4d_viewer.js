@@ -286,24 +286,46 @@ app.registerExtension({
         // stopPropagation so ComfyUI/LiteGraph doesn't drag the NODE while we orbit
         cv.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); drag = true; lx = e.clientX; ly = e.clientY; cv.setPointerCapture(e.pointerId); });
         cv.addEventListener("pointerup", e => { drag = false; });
-        cv.addEventListener("pointermove", e => { if (!drag) return; e.stopPropagation(); az -= (e.clientX-lx)*0.01; el = Math.max(-1.45, Math.min(1.45, el+(e.clientY-ly)*0.01)); lx = e.clientX; ly = e.clientY; });
-        cv.addEventListener("wheel", e => { e.preventDefault(); e.stopPropagation(); radius = Math.max(2.0, Math.min(8, radius*Math.exp(e.deltaY*0.001))); }, { passive: false });
-        slider.addEventListener("input", () => { frame = +slider.value; tval = frame/(NFRAMES-1); });
+        cv.addEventListener("pointermove", e => { if (!drag) return; e.stopPropagation(); az -= (e.clientX-lx)*0.01; el = Math.max(-1.45, Math.min(1.45, el+(e.clientY-ly)*0.01)); lx = e.clientX; ly = e.clientY; invalidate(); });
+        cv.addEventListener("wheel", e => { e.preventDefault(); e.stopPropagation(); radius = Math.max(2.0, Math.min(8, radius*Math.exp(e.deltaY*0.001))); invalidate(); }, { passive: false });
+        slider.addEventListener("input", () => { playIdx = +slider.value; });
         playBtn.addEventListener("click", () => { playing = !playing; playBtn.textContent = playing ? "Pause" : "Play"; });
-        resetBtn.addEventListener("click", () => { az = Math.PI/2; el = 0.58; radius = 3.33; });
+        resetBtn.addEventListener("click", () => { az = Math.PI/2; el = 0.58; radius = 3.33; invalidate(); });
 
         const proto = location.protocol === "https:" ? "wss" : "ws";
         const url = `${proto}://${location.host}/4k4d/stream`;
+        // cache-then-play: the live IBR render is ~6fps, so buffer all NFRAMES once at the
+        // current view, then play the cache at a true 30fps. Orbiting re-buffers the new view.
+        const PRIME = 4;
+        let cache = new Array(NFRAMES).fill(null), recvCount = 0, sentCount = 0, playIdx = 0;
+        let streaming = false, playTimer = null, ws = null;
+        const setStatus = (t, c) => { statusEl.textContent = t; statusEl.style.color = c || "#888"; };
+        const reqCamera = () => { tval = (sentCount % NFRAMES) / (NFRAMES - 1); sentCount++; if (ws && ws.readyState === 1) ws.send(zlibStore(JSON.stringify(buildCamera()))); };
+        const startPlay = () => {
+            streaming = false; setStatus("live: playing 30fps", "#48bb78");
+            if (playTimer) clearInterval(playTimer);
+            playTimer = setInterval(() => { if (!playing) return; const b = cache[playIdx]; if (b) draw(b); slider.value = playIdx; frameEl.textContent = `${playIdx}/${NFRAMES}`; playIdx = (playIdx + 1) % NFRAMES; }, 1000 / 30);
+        };
+        function invalidate() {   // camera changed -> rebuild cache for the new view
+            cache = new Array(NFRAMES).fill(null); recvCount = 0; sentCount = 0;
+            if (playTimer) { clearInterval(playTimer); playTimer = null; }
+            setStatus(`live: buffering 0/${NFRAMES}`);
+            if (!streaming) { streaming = true; reqCamera(); }
+        }
         const connect = () => {
-            const ws = new WebSocket(url); ws.binaryType = "arraybuffer";
-            ws.onopen = () => { statusEl.textContent = "live: connected"; statusEl.style.color = "#48bb78"; };
-            ws.onclose = () => { statusEl.textContent = "live: disconnected — retry"; statusEl.style.color = "#e53e3e"; setTimeout(connect, 1500); };
-            ws.onerror = () => { statusEl.textContent = "live: error (render-server up?)"; };
+            ws = new WebSocket(url); ws.binaryType = "arraybuffer";
+            ws.onopen = () => { setStatus("live: buffering…"); streaming = true; reqCamera(); };
+            ws.onclose = () => { setStatus("live: disconnected — retry", "#e53e3e"); streaming = false; if (playTimer) { clearInterval(playTimer); playTimer = null; } setTimeout(connect, 1500); };
+            ws.onerror = () => { setStatus("live: error (render-server up?)", "#e53e3e"); };
             ws.onmessage = async ev => {
-                try { const bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); draw(bmp); } catch (e) {}
-                // advance ON each rendered frame -> never skips, plays every frame in order, loops cleanly
-                if (playing) { frame = (frame + 1) % NFRAMES; tval = frame / (NFRAMES - 1); slider.value = frame; frameEl.textContent = `${frame}/${NFRAMES}`; }
-                if (ws.readyState === 1) ws.send(zlibStore(JSON.stringify(buildCamera())));
+                let bmp = null; try { bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
+                if (!streaming) return;                  // playing from cache; ignore stray frames
+                recvCount++;
+                const idx = recvCount - PRIME - 1;       // skip PRIME warm-up frames (default cam + render lag)
+                if (idx >= 0 && idx < NFRAMES && bmp) { cache[idx] = bmp; draw(bmp); setStatus(`live: buffering ${idx + 1}/${NFRAMES}`); }
+                else if (bmp) draw(bmp);
+                if (idx + 1 >= NFRAMES) { startPlay(); return; }   // cache full -> play at 30fps
+                reqCamera();
             };
         };
         connect();
