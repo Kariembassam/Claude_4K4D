@@ -93,3 +93,25 @@ The exported move must equal the previewed move, so both sides implement one for
 ## Out of scope (v1)
 Right-drag pan, marker drag-to-retime, per-key easing curves, save/load camera paths, multiple
 camera tracks.
+
+## Playback model (refined after testing)
+
+The EasyVolcap render-server is **decoupled**: a frame received over the socket can be a STALE
+duplicate of the previous one (the render loop is slower than the socket). The original
+PRIME-pipeline cache therefore cached wrong-time / duplicate frames → **jitter at 30fps**, while
+the MP4 export was always clean because it **waits for a genuinely fresh render** (accepts a frame
+only when its bytes differ from the last accepted one). So the live cache now uses the **same
+wait-fresh method**, built sequentially. Model:
+
+- **30fps master clock** drives time + draws. It plays the cache only when `ready` (a full
+  131-frame pass was built at one unchanged view). Never resets the playhead.
+- **Background worker** fills the cache sequentially with wait-fresh (skips stale duplicates so
+  every cached frame is a distinct, correctly-timed render). Once a clean full pass is built →
+  `ready`, and the worker **IDLES** (never re-renders/overwrites the good cache — that overwrite
+  was a second source of jitter).
+- **Orbit / paused / building → HOLD**: the preview shows the *current frame at the current angle*
+  (a live-rendered "playhead" frame that follows the camera), and the cache rebuilds **silently**
+  in the background. The build **sweep is never drawn** (drawing it looked like "caching"/scanning).
+  When the rebuild completes → resume 30fps (or stay frozen if paused).
+- **Cost:** at the ~6 fps IBR render, a clean rebuild takes ~30–40 s; during it the preview holds
+  the current frame at the new angle. (Future: speed the rebuild, or play the prior cache during it.)

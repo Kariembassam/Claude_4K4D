@@ -267,7 +267,7 @@ app.registerExtension({
         // INTERACT = orbit/scrub -> render the current frame live (eased, no re-buffer);
         // PLAY = buffer 131 frames at the keyframed camera, play at 30fps.
         let cur = { ...HOME }, tgt = { ...HOME }, playhead = 0;
-        let mode = "interact", playing = false, dirty = true;
+        let playing = true, lastOrbit = 0;
         let keys = [], uAz = [], selKey = -1;       // camera keyframes (sorted by f) + unwrapped az
 
         // minimal zlib (single stored block) so the server's zlib.decompress() accepts our camera
@@ -339,74 +339,110 @@ app.registerExtension({
             updatePlayhead();
         }
 
-        // ---- ws ping-pong + modes ----
+        // ---- continuous playback: a 30fps master clock + a background render worker ----
+        // The worker re-renders frames at the current angle (free orbit; or the keyframed move
+        // when settled with >=2 keys). A frame is drawn from the cache when it's fresh for the
+        // desired angle, else from the latest live render. Orbiting never resets the playhead or
+        // shows a buffer sweep — the cache re-converges in the background while playback continues.
         const proto = location.protocol === "https:" ? "wss" : "ws";
         const url = `${proto}://${location.host}/4k4d/stream`;
-        const PRIME = 4;
-        let cache = new Array(NFRAMES).fill(null), recvCount = 0, sentCount = 0, playIdx = 0;
-        let active = false, playTimer = null, ws = null;
+        const PRIME = 4;                              // render-pipeline lag (frames to skip)
+        let cache = new Array(NFRAMES).fill(null);    // rendered bitmap per frame
+        let rkey  = new Array(NFRAMES).fill("");      // angle-key each cached frame was rendered at
+        let liveFrame = null;                         // latest render (shown for not-yet-fresh frames)
+        let active = false, ws = null, pending = [], exporting = false, masterTimer = null;
         const setStatus = (t, c) => { statusEl.textContent = t; statusEl.style.color = c || "#888"; };
         const sendCam = o => { if (ws && ws.readyState === 1) ws.send(zlibStore(JSON.stringify(o))); };
-        const easeStep = () => { cur.az += (tgt.az-cur.az)*EASE; cur.el += (tgt.el-cur.el)*EASE; cur.radius *= Math.pow(tgt.radius/cur.radius, EASE); };
-        const sendInteract = () => sendCam(camAtView(cur, playhead/(NFRAMES-1)));
-        const sendBuffer = () => { const fi = sentCount%NFRAMES, t = fi/(NFRAMES-1); sentCount++; sendCam(camAtView(orbitAt(fi), t)); };
-        const lockExport = () => { if (exportBtn) { exportBtn.disabled=true; exportBtn.style.opacity="0.5"; exportBtn.innerHTML="&#x2913; Export (needs Play)"; } };
-        const unlockExport = () => { if (exportBtn) { exportBtn.disabled=false; exportBtn.style.opacity="1"; exportBtn.innerHTML="&#x2913; Export MP4"; } };
 
-        function enterInteract() {   // orbit/scrub -> render current frame live (no re-buffer)
-            mode="interact"; playing=false; dirty=true; playBtn.innerHTML="&#x25B6; Play";
-            if (playTimer) { clearInterval(playTimer); playTimer=null; }
-            lockExport();
-            if (!active) { active=true; sendInteract(); }   // kick the ping-pong if idle
-        }
-        function startBuffer() {     // Play -> buffer the keyframed move, then play
-            mode="buffer"; cache=new Array(NFRAMES).fill(null); recvCount=0; sentCount=0;
-            if (playTimer) { clearInterval(playTimer); playTimer=null; }
-            lockExport(); setStatus(`buffering 0/${NFRAMES}`);
-            if (!active) { active=true; sendBuffer(); }
-        }
-        const startPlay = () => {    // cache full -> play at 30fps
-            mode="play"; active=false; playing=true; dirty=false;
-            playBtn.innerHTML="&#x23F8; Pause"; setStatus("playing 30fps", "#48bb78"); unlockExport();
-            if (playTimer) clearInterval(playTimer);
-            playTimer = setInterval(() => { if (!playing) return; const b = cache[playIdx]; if (b) draw(b);
-                playhead = playIdx; frameEl.textContent = `${playIdx}/${NFRAMES}`; updatePlayhead();
-                playIdx = (playIdx + 1) % NFRAMES; }, 1000 / 30);
+        const angleKey = o => `${Math.round(o.az*50)}_${Math.round(o.el*50)}_${Math.round(o.radius*50)}`;
+        const inEdit = () => Date.now() - lastOrbit < 2000;    // recently orbited -> free orbit (aim / add keys)
+        const moveMode = () => keys.length >= 2 && !inEdit();   // else: preview the keyframed move
+        const frameOrbit = i => moveMode() ? orbitAt(i) : cur;
+        const curKey = () => moveMode() ? "move" : angleKey(tgt);   // identity of the view we want cached
+        const unlockExport = () => { if (exportBtn && !exporting) { exportBtn.disabled=false; exportBtn.style.opacity="1"; exportBtn.innerHTML="&#x2913; Export MP4"; } };
+
+        // The render-server is DECOUPLED: a received frame can be a STALE duplicate of the
+        // previous one. So — exactly like the export — accept a frame into the cache only when its
+        // bytes DIFFER from the last accepted frame (a genuinely fresh render). Build the cache
+        // sequentially (drawing each new frame = live-follow); once a full pass is built at one
+        // unchanged view, play that clean cache at a true 30fps. (The old PRIME pipeline trusted
+        // the timing and cached stale/dup frames -> the 30fps jitter; the export never had it.)
+        let buildKey = null, bufN = 0, goodRun = 0, ready = false, readyKey = null, lastBytes = null, staleN = 0, lastIdx = 0, lastDisp = false;
+        const validPH = () => cache[playhead] && rkey[playhead] === curKey();   // current frame already cached for this view
+        const sampleEq = (a, b) => { if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i += 503) if (a[i] !== b[i]) return false; return true; };
+        const sendBuild = () => {
+            if (exporting || !ws || ws.readyState !== 1) { active = false; return; }
+            // current frame not cached for this view (just orbited) -> render the FROZEN playhead
+            // so the preview follows the camera; otherwise advance the SILENT background build sweep.
+            lastDisp = !validPH();
+            lastIdx = lastDisp ? playhead : bufN;
+            sendCam(camAtView(frameOrbit(lastIdx), lastIdx / (NFRAMES - 1)));
+        };
+        const resumeWorker = () => { if (active || exporting || !ws || ws.readyState !== 1) return; lastBytes = null; staleN = 0; active = true; sendBuild(); };
+
+        // master clock: ease the camera, advance time, draw the best frame — true 30fps, never resets
+        const startClock = () => {
+            if (masterTimer) clearInterval(masterTimer);
+            masterTimer = setInterval(() => {
+                // ease toward the target, and SNAP exactly when close — otherwise cur stays
+                // asymptotically just short of tgt and angleKey(cur) can round to a different
+                // bucket than angleKey(tgt), flipping every frame to "not fresh" forever.
+                cur.az += (tgt.az-cur.az)*EASE;         if (Math.abs(cur.az-tgt.az) < 1e-3) cur.az = tgt.az;
+                cur.el += (tgt.el-cur.el)*EASE;         if (Math.abs(cur.el-tgt.el) < 1e-3) cur.el = tgt.el;
+                cur.radius *= Math.pow(tgt.radius/cur.radius, EASE); if (Math.abs(cur.radius-tgt.radius) < 1e-3) cur.radius = tgt.radius;
+                if (ready && readyKey !== curKey()) ready = false;   // view changed (orbit/keyframe) -> rebuild
+                if (ready && playing) {
+                    // smooth 30fps playback from the clean cache
+                    if (cache[playhead]) draw(cache[playhead]);
+                    playhead = (playhead + 1) % NFRAMES;
+                } else {
+                    // orbiting / building / paused -> HOLD the current frame at the current view
+                    // (the preview follows the camera); the cache rebuilds SILENTLY in the
+                    // background and we resume 30fps once it's clean + complete. No build sweep shown.
+                    const b = validPH() ? cache[playhead] : liveFrame;
+                    if (b) draw(b);
+                }
+                frameEl.textContent = `${playhead}/${NFRAMES}`; updatePlayhead();
+                if (!exporting) {
+                    if (ready) setStatus(playing ? "playing 30fps" : "paused", playing ? "#48bb78" : "#888");
+                    else { setStatus(`${moveMode() ? "rendering move" : "rendering view"} ${Math.min(goodRun, NFRAMES)}/${NFRAMES}`, "#6cf"); resumeWorker(); }
+                    unlockExport();
+                }
+            }, 1000 / 30);
         };
 
-        // ---- controls ----
+        // ---- camera + timeline controls ----
         let drag = false, lx = 0, ly = 0;
         // stopPropagation so ComfyUI/LiteGraph doesn't drag the NODE while we interact
         cv.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); drag=true; lx=e.clientX; ly=e.clientY; cv.setPointerCapture(e.pointerId); });
         cv.addEventListener("pointerup", () => { drag=false; });
-        cv.addEventListener("pointermove", e => { if(!drag)return; e.stopPropagation(); tgt.az -= (e.clientX-lx)*0.01; tgt.el = clampEl(tgt.el+(e.clientY-ly)*0.01); lx=e.clientX; ly=e.clientY; enterInteract(); });
-        cv.addEventListener("wheel", e => { e.preventDefault(); e.stopPropagation(); tgt.radius = clampR(tgt.radius*Math.exp(e.deltaY*0.001)); enterInteract(); }, { passive: false });
+        cv.addEventListener("pointermove", e => { if(!drag)return; e.stopPropagation(); tgt.az -= (e.clientX-lx)*0.01; tgt.el = clampEl(tgt.el+(e.clientY-ly)*0.01); lx=e.clientX; ly=e.clientY; lastOrbit=Date.now(); });
+        cv.addEventListener("wheel", e => { e.preventDefault(); e.stopPropagation(); tgt.radius = clampR(tgt.radius*Math.exp(e.deltaY*0.001)); lastOrbit=Date.now(); }, { passive: false });
 
         let scrubbing = false;
         const scrubTo = e => { const r=timelineEl.getBoundingClientRect(); const x=Math.max(0,Math.min(1,(e.clientX-r.left)/(r.width||1)));
-            playhead = Math.round(x*(NFRAMES-1)); frameEl.textContent = `${playhead}/${NFRAMES}`;
-            if (keys.length>=2) tgt = orbitAt(playhead); enterInteract(); updatePlayhead(); };
+            playhead = Math.round(x*(NFRAMES-1)); frameEl.textContent = `${playhead}/${NFRAMES}`; updatePlayhead(); };
         timelineEl.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); scrubbing=true; timelineEl.setPointerCapture(e.pointerId);
             const ki = e.target && e.target.dataset ? e.target.dataset.ki : undefined; if (ki!==undefined) { selKey=+ki; renderMarkers(); } scrubTo(e); });
         timelineEl.addEventListener("pointermove", e => { if(!scrubbing)return; e.stopPropagation(); scrubTo(e); });
         timelineEl.addEventListener("pointerup", () => { scrubbing=false; });
 
         playBtn.addEventListener("click", () => {
-            if (mode==="play" && playing) { playing=false; playBtn.innerHTML="&#x25B6; Play"; setStatus("paused"); return; }
-            if (mode==="play" && !playing && !dirty) { playing=true; playBtn.innerHTML="&#x23F8; Pause"; setStatus("playing 30fps","#48bb78"); return; }
-            startBuffer();   // dirty / interacting -> (re)buffer the keyframed move then play
+            playing = !playing;
+            playBtn.innerHTML = playing ? "&#x23F8; Pause" : "&#x25B6; Play";
+            if (!playing) setStatus("paused");
         });
-        resetBtn.addEventListener("click", () => { tgt={...HOME}; enterInteract(); });
+        resetBtn.addEventListener("click", () => { tgt = { ...HOME }; lastOrbit = Date.now(); });
         addKeyBtn.addEventListener("click", () => {
             const k = { f:playhead, az:cur.az, el:cur.el, radius:cur.radius };
             const ex = keys.findIndex(x=>x.f===k.f); if (ex>=0) keys[ex]=k; else keys.push(k);
-            rebuildKeys(); selKey = keys.findIndex(x=>x.f===k.f); dirty=true; renderMarkers();
-            setStatus(`added key @${k.f} (${keys.length} total)`, "#6cf");
+            rebuildKeys(); selKey = keys.findIndex(x=>x.f===k.f); renderMarkers();
+            setStatus(`added key @${k.f} (${keys.length} total)`, "#6cf"); lastOrbit = Date.now();
         });
         delKeyBtn.addEventListener("click", () => {
             if (!keys.length) return;
             let bi=0, bd=1e9; keys.forEach((k,i)=>{ const d=Math.abs(k.f-playhead); if(d<bd){ bd=d; bi=i; } });
-            const f=keys[bi].f; keys.splice(bi,1); selKey=-1; rebuildKeys(); dirty=true;
+            const f=keys[bi].f; keys.splice(bi,1); selKey=-1; rebuildKeys();
             setStatus(`deleted key @${f} (${keys.length} left)`, "#6cf");
         });
 
@@ -416,13 +452,13 @@ app.registerExtension({
             const RES = 1080;
             const cam = { H: RES, W: RES, K: [[RES*0.82,0,RES/2],[0,RES*0.82,RES/2],[0,0,1]], bounds: BOUNDS, nframes: NFRAMES, center: CENTER, world_up: WUP };
             if (keys.length>=2) cam.keyframes = keys.map(k=>({ f:k.f, az:k.az, el:k.el, radius:k.radius }));
-            else { const base = camAtView(keys.length===1?keys[0]:cur, 0); cam.R = base.R; cam.T = base.T; }
+            else { const base = camAtView(keys.length===1?keys[0]:tgt, 0); cam.R = base.R; cam.T = base.T; }
+            exporting = true; active = false;   // free the render-server for the export (cache keeps playing)
             exportBtn.disabled=true; exportBtn.style.opacity="0.5"; exportBtn.innerHTML="&#x2913; Exporting&hellip;";
-            playing=false; active=false; if (playTimer) { clearInterval(playTimer); playTimer=null; }  // free the render-server
             setStatus("export: starting…", "#f6ad55");
             let info;
             try { info = await (await fetch("/4k4d/export_video", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(cam) })).json(); }
-            catch (e) { setStatus("export: request failed", "#e53e3e"); dirty=true; return; }
+            catch (e) { setStatus("export: request failed", "#e53e3e"); exporting=false; resumeWorker(); return; }
             const poll = setInterval(async () => {
                 let txt=""; try { txt = await (await fetch(info.log_url + "&_=" + Date.now())).text(); } catch (e) {}
                 const m = txt.match(/rendering \d+\/\d+/g); if (m) setStatus("export: " + m[m.length-1], "#f6ad55");
@@ -430,31 +466,37 @@ app.registerExtension({
                     clearInterval(poll); setStatus("export: done ✓ — downloading", "#48bb78");
                     const a = document.createElement("a"); a.href = info.mp4_url; a.download = "dome_dancer_4d.mp4"; document.body.appendChild(a); a.click(); a.remove();
                     window.app.api.dispatchEvent(new CustomEvent("4k4d.viewer.load", { detail: { mp4_path: info.mp4_path, autoplay: true, loop: true } }));
-                    dirty=true; setTimeout(() => playBtn.click(), 600);   // re-buffer + resume the live view
-                } else if (/EXPORT (FAIL|ERROR)/.test(txt)) { clearInterval(poll); setStatus("export: failed", "#e53e3e"); dirty=true; }
+                    exporting = false; resumeWorker();
+                } else if (/EXPORT (FAIL|ERROR)/.test(txt)) { clearInterval(poll); setStatus("export: failed", "#e53e3e"); exporting=false; resumeWorker(); }
             }, 1500);
         });
 
         // ---- connect ----
         const connect = () => {
             ws = new WebSocket(url); ws.binaryType = "arraybuffer";
-            ws.onopen = () => { setStatus("buffering…"); startBuffer(); };
-            ws.onclose = () => { setStatus("disconnected — retry", "#e53e3e"); active=false; if (playTimer) { clearInterval(playTimer); playTimer=null; } setTimeout(connect, 1500); };
+            ws.onopen = () => { setStatus("starting…"); buildKey = curKey(); goodRun = 0; lastBytes = null; staleN = 0; active = true; sendBuild(); };
+            ws.onclose = () => { setStatus("disconnected — retry", "#e53e3e"); active = false; setTimeout(connect, 1500); };
             ws.onerror = () => { setStatus("starting render-server (loading model ~2 min)…", "#f6ad55"); };
             ws.onmessage = async ev => {
-                let bmp = null; try { bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
                 if (!active) return;
-                if (mode === "interact") { if (bmp) draw(bmp); easeStep(); sendInteract(); return; }
-                if (mode === "buffer") {
-                    recvCount++; const idx = recvCount - PRIME - 1;
-                    if (idx>=0 && idx<NFRAMES && bmp) { cache[idx]=bmp; draw(bmp); setStatus(`buffering ${idx+1}/${NFRAMES}`); }
-                    else if (bmp) draw(bmp);
-                    if (idx+1>=NFRAMES) { startPlay(); return; }
-                    sendBuffer(); return;
+                const raw = new Uint8Array(ev.data);
+                if (buildKey !== curKey()) { buildKey = curKey(); goodRun = 0; lastBytes = null; staleN = 0; }   // view changed mid-pass -> restart the clean run
+                if (lastDisp) {   // display-only render of the frozen playhead (paused + orbiting): show latest, no wait-fresh, no sweep advance
+                    let bd = null; try { bd = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
+                    if (bd) { cache[playhead] = bd; rkey[playhead] = curKey(); liveFrame = bd; }
+                    sendBuild(); return;
                 }
+                if (lastBytes && sampleEq(raw, lastBytes) && staleN < 40) { staleN++; sendBuild(); return; }     // stale duplicate of the last frame -> wait for a genuinely fresh render
+                staleN = 0; lastBytes = raw;
+                let bmp = null; try { bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
+                if (bmp) { cache[bufN] = bmp; rkey[bufN] = buildKey; }   // build sweep is SILENT (never drawn); only playhead-disp renders update the preview
+                goodRun++; bufN = (bufN + 1) % NFRAMES;
+                if (goodRun >= NFRAMES) { ready = true; readyKey = buildKey; active = false; return; }   // a full clean pass -> play the cache + IDLE (never overwrite it)
+                sendBuild();
             };
         };
-        rebuildKeys(); connect();
+        playBtn.innerHTML = "&#x23F8; Pause";
+        rebuildKeys(); startClock(); connect();
     },
 
     _addStatusWidget(node) {
