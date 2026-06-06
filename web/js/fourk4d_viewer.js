@@ -367,30 +367,18 @@ app.registerExtension({
         // sequentially (drawing each new frame = live-follow); once a full pass is built at one
         // unchanged view, play that clean cache at a true 30fps. (The old PRIME pipeline trusted
         // the timing and cached stale/dup frames -> the 30fps jitter; the export never had it.)
-        // TIME (playhead) is the master clock — INDEPENDENT of the camera. The worker keeps the
-        // PLAYHEAD frame rendered at the current angle for the live preview (so orbiting changes the
-        // ANGLE, not the timeline — no scrubbing), and SEPARATELY fills the rest of the cache with
-        // sequential wait-fresh "clean" renders for true 30fps. clean[i] = a wait-fresh render.
-        let bufN = 0, lastBuildBytes = null, lastBuildKey = null, staleN = 0, lastIdx = 0, lastDisp = false;
-        let clean = new Array(NFRAMES).fill(false);
-        const dispReady = i => cache[i] && rkey[i] === curKey();    // renderable for display at the current view
-        const cleanReady = i => clean[i] && rkey[i] === curKey();   // wait-fresh clean at the current view
-        const cleanCount = () => { let n = 0; for (let i = 0; i < NFRAMES; i++) if (cleanReady(i)) n++; return n; };
+        let buildKey = null, bufN = 0, goodRun = 0, ready = false, readyKey = null, lastBytes = null, staleN = 0, lastIdx = 0, lastDisp = false;
+        const validPH = () => cache[playhead] && rkey[playhead] === curKey();   // current frame already cached for this view
         const sampleEq = (a, b) => { if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i += 503) if (a[i] !== b[i]) return false; return true; };
         const sendBuild = () => {
             if (exporting || !ws || ws.readyState !== 1) { active = false; return; }
-            // keep the PLAYHEAD frame rendered at the current angle for the live preview that
-            // follows the camera, then fill the rest of the cache sequentially with wait-fresh frames.
-            if (!dispReady(playhead)) { lastDisp = true; lastIdx = playhead; }
-            else {
-                if (curKey() !== lastBuildKey) { lastBuildKey = curKey(); lastBuildBytes = null; }   // new view -> fresh wait-fresh baseline
-                let tries = 0; while (cleanReady(bufN) && tries < NFRAMES) { bufN = (bufN + 1) % NFRAMES; tries++; }
-                if (tries >= NFRAMES) { active = false; return; }   // everything clean at this view -> idle
-                lastDisp = false; lastIdx = bufN;
-            }
+            // current frame not cached for this view (just orbited) -> render the FROZEN playhead
+            // so the preview follows the camera; otherwise advance the SILENT background build sweep.
+            lastDisp = !validPH();
+            lastIdx = lastDisp ? playhead : bufN;
             sendCam(camAtView(frameOrbit(lastIdx), lastIdx / (NFRAMES - 1)));
         };
-        const resumeWorker = () => { if (active || exporting || !ws || ws.readyState !== 1) return; lastBuildBytes = null; staleN = 0; active = true; sendBuild(); };
+        const resumeWorker = () => { if (active || exporting || !ws || ws.readyState !== 1) return; lastBytes = null; staleN = 0; active = true; sendBuild(); };
 
         // master clock: ease the camera, advance time, draw the best frame — true 30fps, never resets
         const startClock = () => {
@@ -402,18 +390,22 @@ app.registerExtension({
                 cur.az += (tgt.az-cur.az)*EASE;         if (Math.abs(cur.az-tgt.az) < 1e-3) cur.az = tgt.az;
                 cur.el += (tgt.el-cur.el)*EASE;         if (Math.abs(cur.el-tgt.el) < 1e-3) cur.el = tgt.el;
                 cur.radius *= Math.pow(tgt.radius/cur.radius, EASE); if (Math.abs(cur.radius-tgt.radius) < 1e-3) cur.radius = tgt.radius;
-                // DECOUPLED: draw the frame at the current PLAYHEAD time, at the current angle — the
-                // clean cache frame if we have it, else the latest live render of the playhead. TIME
-                // advances ONLY via this clock (30fps playing / frozen paused), NEVER from the
-                // camera, so orbiting changes the angle and never scrubs the timeline.
-                const b = dispReady(playhead) ? cache[playhead] : liveFrame;
-                if (b) draw(b);
-                if (playing) playhead = (playhead + 1) % NFRAMES;
+                if (ready && readyKey !== curKey()) ready = false;   // view changed (orbit/keyframe) -> rebuild
+                if (ready && playing) {
+                    // smooth 30fps playback from the clean cache
+                    if (cache[playhead]) draw(cache[playhead]);
+                    playhead = (playhead + 1) % NFRAMES;
+                } else {
+                    // orbiting / building / paused -> HOLD the current frame at the current view
+                    // (the preview follows the camera); the cache rebuilds SILENTLY in the
+                    // background and we resume 30fps once it's clean + complete. No build sweep shown.
+                    const b = validPH() ? cache[playhead] : liveFrame;
+                    if (b) draw(b);
+                }
                 frameEl.textContent = `${playhead}/${NFRAMES}`; updatePlayhead();
                 if (!exporting) {
-                    const nc = cleanCount();
-                    if (nc >= NFRAMES) setStatus(playing ? "playing 30fps" : "paused", playing ? "#48bb78" : "#888");
-                    else { setStatus(`${moveMode() ? "rendering move" : (playing ? "caching" : "caching (silent)")} ${nc}/${NFRAMES}`, "#6cf"); resumeWorker(); }
+                    if (ready) setStatus(playing ? "playing 30fps" : "paused", playing ? "#48bb78" : "#888");
+                    else { setStatus(`${moveMode() ? "rendering move" : "rendering view"} ${Math.min(goodRun, NFRAMES)}/${NFRAMES}`, "#6cf"); resumeWorker(); }
                     unlockExport();
                 }
             }, 1000 / 30);
@@ -482,22 +474,24 @@ app.registerExtension({
         // ---- connect ----
         const connect = () => {
             ws = new WebSocket(url); ws.binaryType = "arraybuffer";
-            ws.onopen = () => { setStatus("starting…"); lastBuildBytes = null; staleN = 0; active = true; sendBuild(); };
+            ws.onopen = () => { setStatus("starting…"); buildKey = curKey(); goodRun = 0; lastBytes = null; staleN = 0; active = true; sendBuild(); };
             ws.onclose = () => { setStatus("disconnected — retry", "#e53e3e"); active = false; setTimeout(connect, 1500); };
             ws.onerror = () => { setStatus("starting render-server (loading model ~2 min)…", "#f6ad55"); };
             ws.onmessage = async ev => {
                 if (!active) return;
                 const raw = new Uint8Array(ev.data);
-                if (lastDisp) {   // PLAYHEAD render for the live preview (follows the camera; transient, not clean)
+                if (buildKey !== curKey()) { buildKey = curKey(); goodRun = 0; lastBytes = null; staleN = 0; }   // view changed mid-pass -> restart the clean run
+                if (lastDisp) {   // display-only render of the frozen playhead (paused + orbiting): show latest, no wait-fresh, no sweep advance
                     let bd = null; try { bd = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
-                    if (bd) { cache[lastIdx] = bd; rkey[lastIdx] = curKey(); clean[lastIdx] = false; liveFrame = bd; }
+                    if (bd) { cache[playhead] = bd; rkey[playhead] = curKey(); liveFrame = bd; }
                     sendBuild(); return;
                 }
-                // sequential wait-fresh build of a CLEAN cache frame — silent (never drawn)
-                if (lastBuildBytes && sampleEq(raw, lastBuildBytes) && staleN < 40) { staleN++; sendBuild(); return; }   // stale duplicate -> wait for a genuinely fresh render
-                staleN = 0; lastBuildBytes = raw;
+                if (lastBytes && sampleEq(raw, lastBytes) && staleN < 40) { staleN++; sendBuild(); return; }     // stale duplicate of the last frame -> wait for a genuinely fresh render
+                staleN = 0; lastBytes = raw;
                 let bmp = null; try { bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
-                if (bmp) { cache[lastIdx] = bmp; rkey[lastIdx] = curKey(); clean[lastIdx] = true; }
+                if (bmp) { cache[bufN] = bmp; rkey[bufN] = buildKey; }   // build sweep is SILENT (never drawn); only playhead-disp renders update the preview
+                goodRun++; bufN = (bufN + 1) % NFRAMES;
+                if (goodRun >= NFRAMES) { ready = true; readyKey = buildKey; active = false; return; }   // a full clean pass -> play the cache + IDLE (never overwrite it)
                 sendBuild();
             };
         };
