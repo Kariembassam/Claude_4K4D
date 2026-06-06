@@ -372,13 +372,14 @@ app.registerExtension({
         const sampleEq = (a, b) => { if (!a || !b || a.length !== b.length) return false; for (let i = 0; i < a.length; i += 503) if (a[i] !== b[i]) return false; return true; };
         const sendBuild = () => {
             if (exporting || !ws || ws.readyState !== 1) { active = false; return; }
-            // current frame not cached for this view (just orbited) -> render the FROZEN playhead
-            // so the preview follows the camera; otherwise advance the SILENT background build sweep.
-            lastDisp = !validPH();
+            // PAUSED + current frame not cached for this view -> render the frozen playhead so the
+            // preview follows the camera (silent build). When PLAYING we advance the build sweep
+            // and SHOW it (the "caching" preview) until the clean cache is ready.
+            lastDisp = (!playing && !validPH());
             lastIdx = lastDisp ? playhead : bufN;
             sendCam(camAtView(frameOrbit(lastIdx), lastIdx / (NFRAMES - 1)));
         };
-        const resumeWorker = () => { if (active || exporting || !ws || ws.readyState !== 1) return; lastBytes = null; staleN = 0; active = true; sendBuild(); };
+        const resumeWorker = () => { if (active || exporting || !ws || ws.readyState !== 1) return; bufN = playhead; goodRun = 0; lastBytes = null; staleN = 0; active = true; sendBuild(); };  // start each rebuild at the current frame so the "caching" preview flows forward (no jump)
 
         // master clock: ease the camera, advance time, draw the best frame — true 30fps, never resets
         const startClock = () => {
@@ -391,21 +392,19 @@ app.registerExtension({
                 cur.el += (tgt.el-cur.el)*EASE;         if (Math.abs(cur.el-tgt.el) < 1e-3) cur.el = tgt.el;
                 cur.radius *= Math.pow(tgt.radius/cur.radius, EASE); if (Math.abs(cur.radius-tgt.radius) < 1e-3) cur.radius = tgt.radius;
                 if (ready && readyKey !== curKey()) ready = false;   // view changed (orbit/keyframe) -> rebuild
-                if (ready && playing) {
-                    // smooth 30fps playback from the clean cache
-                    if (cache[playhead]) draw(cache[playhead]);
-                    playhead = (playhead + 1) % NFRAMES;
+                if (playing) {
+                    if (ready && cache[playhead]) { draw(cache[playhead]); playhead = (playhead + 1) % NFRAMES; }   // smooth 30fps from the clean cache
+                    else { if (liveFrame) draw(liveFrame); playhead = bufN; }   // building -> SHOW the cache filling (the "caching" preview) until 30fps; starts at the playhead so no jump
                 } else {
-                    // orbiting / building / paused -> HOLD the current frame at the current view
-                    // (the preview follows the camera); the cache rebuilds SILENTLY in the
-                    // background and we resume 30fps once it's clean + complete. No build sweep shown.
+                    // PAUSED -> hold the current frame at the current view (follows the camera);
+                    // the cache rebuilds SILENTLY in the background. The build sweep is never drawn.
                     const b = validPH() ? cache[playhead] : liveFrame;
                     if (b) draw(b);
                 }
                 frameEl.textContent = `${playhead}/${NFRAMES}`; updatePlayhead();
                 if (!exporting) {
                     if (ready) setStatus(playing ? "playing 30fps" : "paused", playing ? "#48bb78" : "#888");
-                    else { setStatus(`${moveMode() ? "rendering move" : "rendering view"} ${Math.min(goodRun, NFRAMES)}/${NFRAMES}`, "#6cf"); resumeWorker(); }
+                    else { setStatus(`${moveMode() ? "rendering move" : (playing ? "caching" : "caching (silent)")} ${Math.min(goodRun, NFRAMES)}/${NFRAMES}`, "#6cf"); resumeWorker(); }
                     unlockExport();
                 }
             }, 1000 / 30);
@@ -489,7 +488,7 @@ app.registerExtension({
                 if (lastBytes && sampleEq(raw, lastBytes) && staleN < 40) { staleN++; sendBuild(); return; }     // stale duplicate of the last frame -> wait for a genuinely fresh render
                 staleN = 0; lastBytes = raw;
                 let bmp = null; try { bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
-                if (bmp) { cache[bufN] = bmp; rkey[bufN] = buildKey; }   // build sweep is SILENT (never drawn); only playhead-disp renders update the preview
+                if (bmp) { cache[bufN] = bmp; rkey[bufN] = buildKey; if (playing) liveFrame = bmp; }   // SHOW the build sweep while playing (the "caching" preview); keep it silent while paused
                 goodRun++; bufN = (bufN + 1) % NFRAMES;
                 if (goodRun >= NFRAMES) { ready = true; readyKey = buildKey; active = false; return; }   // a full clean pass -> play the cache + IDLE (never overwrite it)
                 sendBuild();
