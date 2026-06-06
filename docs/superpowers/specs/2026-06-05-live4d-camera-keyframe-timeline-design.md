@@ -109,9 +109,11 @@ wait-fresh method**, built sequentially. Model:
   every cached frame is a distinct, correctly-timed render). Once a clean full pass is built →
   `ready`, and the worker **IDLES** (never re-renders/overwrites the good cache — that overwrite
   was a second source of jitter).
-- **Orbit / paused / building → HOLD**: the preview shows the *current frame at the current angle*
-  (a live-rendered "playhead" frame that follows the camera), and the cache rebuilds **silently**
-  in the background. The build **sweep is never drawn** (drawing it looked like "caching"/scanning).
-  When the rebuild completes → resume 30fps (or stay frozen if paused).
+- **Playing → SHOW the build**: while the cache (re)builds (e.g. after an orbit) the preview shows
+  it filling down the timeline (the "caching" preview), flowing forward from the current playhead
+  (`bufN = playhead` on resume, so no jump), until the clean 30fps cache is ready.
+- **Paused → SILENT + frozen**: the preview HOLDS the paused frame (the frame counter does NOT
+  move), showing it from the orbiting angle (a live-rendered playhead frame that follows the
+  camera); the cache rebuilds silently in the background (the build sweep is never drawn).
 - **Cost:** at the ~6 fps IBR render, a clean rebuild takes ~30–40 s; during it the preview holds
   the current frame at the new angle. (Future: speed the rebuild, or play the prior cache during it.)
