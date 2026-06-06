@@ -201,18 +201,22 @@ app.registerExtension({
                 <textarea readonly style="width:100%;height:100px;background:#2a2a2a;color:#fff;border:1px solid #444;font-family:monospace;font-size:12px;padding:8px;"></textarea>
             </div>
             <div class="fourk4d-tab-content" id="fourk4d-live" style="display:none;">
-                <div style="position:relative;width:100%;">
-                    <canvas id="fourk4d-live-canvas" style="width:100%;height:460px;display:block;background:#000;border-radius:4px;cursor:grab;"></canvas>
-                    <div style="position:absolute;left:6px;right:6px;bottom:6px;display:flex;align-items:center;gap:6px;background:rgba(0,0,0,0.6);padding:6px 8px;border-radius:8px;">
-                        <span id="fourk4d-live-status" style="font-size:11px;color:#bbb;min-width:90px;">live: idle</span>
-                        <button id="fourk4d-live-play">Pause</button>
-                        <input type="range" id="fourk4d-live-slider" min="0" max="130" value="0" step="1" style="flex:1;">
-                        <span id="fourk4d-live-frame" style="font-size:11px;color:#bbb;">0/131</span>
-                        <button id="fourk4d-live-reset" title="Reset view">&#x2316;</button>
-                        <button id="fourk4d-live-export" title="Render a high-quality MP4 of the full performance from this exact angle (available once buffering completes)" disabled style="opacity:0.5;">&#x2913; Export (buffering&hellip;)</button>
-                    </div>
+                <canvas id="fourk4d-live-canvas" style="width:100%;height:360px;display:block;background:#000;border-radius:4px;cursor:grab;"></canvas>
+                <div id="fourk4d-live-timeline" title="Click to scrub &middot; &#x25C6; = camera keyframe" style="position:relative;height:30px;margin-top:6px;background:#161616;border:1px solid #333;border-radius:4px;cursor:pointer;user-select:none;overflow:hidden;"></div>
+                <div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap;">
+                    <button id="fourk4d-live-play" title="Build &amp; play the keyframed move">&#x25B6; Play</button>
+                    <span id="fourk4d-live-frame" style="font-size:11px;color:#bbb;min-width:46px;text-align:center;">0/131</span>
+                    <button id="fourk4d-live-addkey" title="Pin the current camera angle at this frame">&#x25C6; Add Key</button>
+                    <button id="fourk4d-live-delkey" title="Delete the nearest camera keyframe">&#x2715; Del Key</button>
+                    <button id="fourk4d-live-reset" title="Reset view">&#x2316;</button>
+                    <span style="flex:1;"></span>
+                    <button id="fourk4d-live-export" title="Render an MP4 of the performance with this camera move (unlocks after a Play buffers)" disabled style="opacity:0.5;">&#x2913; Export (needs Play)</button>
                 </div>
-                <p class="fourk4d-3d-info">Real-time 4D &mdash; drag: orbit &bull; scroll: zoom &bull; plays at 30fps. Export unlocks once all 131 frames are cached. Needs the render-server (serve.sh / WebSocketServer on :1024) on the ComfyUI host.</p>
+                <div style="display:flex;align-items:center;gap:10px;margin-top:5px;">
+                    <span id="fourk4d-live-status" style="font-size:11px;color:#bbb;">live: idle</span>
+                    <span id="fourk4d-live-keycount" style="font-size:11px;color:#6cf;"></span>
+                </div>
+                <p class="fourk4d-3d-info" style="margin-top:5px;">Drag: orbit &bull; scroll: zoom &bull; click timeline: scrub &bull; &#x25C6; Add Key pins the angle at that frame &bull; Play previews the move &bull; Export renders it. Needs the render-server on :1024.</p>
             </div>
         `;
 
@@ -236,7 +240,7 @@ app.registerExtension({
         const widget = node.addDOMWidget("viewer", "custom", container, {
             serialize: false,
         });
-        widget.computeSize = () => [node.size[0], 500];
+        widget.computeSize = () => [node.size[0], 560];
 
         node._viewerContainer = container;
     },
@@ -246,17 +250,25 @@ app.registerExtension({
         const cv = container.querySelector("#fourk4d-live-canvas");
         const ctx = cv.getContext("2d");
         const statusEl = container.querySelector("#fourk4d-live-status");
+        const keycountEl = container.querySelector("#fourk4d-live-keycount");
         const playBtn = container.querySelector("#fourk4d-live-play");
-        const slider = container.querySelector("#fourk4d-live-slider");
         const frameEl = container.querySelector("#fourk4d-live-frame");
         const resetBtn = container.querySelector("#fourk4d-live-reset");
+        const addKeyBtn = container.querySelector("#fourk4d-live-addkey");
+        const delKeyBtn = container.querySelector("#fourk4d-live-delkey");
         const exportBtn = container.querySelector("#fourk4d-live-export");
+        const timelineEl = container.querySelector("#fourk4d-live-timeline");
 
         // config — calibrated to the capture dome
         const RW = 512, RH = 512, FL = RW * 0.82;   // lower res -> faster render readback/transfer
-        const CENTER = [0.0, 0.0, 0.6], NFRAMES = 131;
+        const CENTER = [0.0, 0.0, 0.6], WUP = [0, 0, 1], NFRAMES = 131;
         const BOUNDS = [[-1.4, -1.4, -1.4], [1.4, 1.4, 1.7]];   // cull off-surface floaters
-        let az = Math.PI / 2, el = 0.58, radius = 3.33, tval = 0, frame = 0, playing = true;
+        const EASE = 0.22, HOME = { az: Math.PI / 2, el: 0.58, radius: 3.33 };
+        // INTERACT = orbit/scrub -> render the current frame live (eased, no re-buffer);
+        // PLAY = buffer 131 frames at the keyframed camera, play at 30fps.
+        let cur = { ...HOME }, tgt = { ...HOME }, playhead = 0;
+        let mode = "interact", playing = false, dirty = true;
+        let keys = [], uAz = [], selKey = -1;       // camera keyframes (sorted by f) + unwrapped az
 
         // minimal zlib (single stored block) so the server's zlib.decompress() accepts our camera
         const adler32 = d => { let a = 1, b = 0; for (let i = 0; i < d.length; i++) { a = (a + d[i]) % 65521; b = (b + a) % 65521; } return ((b << 16) | a) >>> 0; };
@@ -269,100 +281,180 @@ app.registerExtension({
         const sub = (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]], dot = (a, b) => a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
         const cross = (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
         const norm = a => { const l = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/l, a[1]/l, a[2]/l]; };
-        const buildCamera = () => {
-            const ce = Math.cos(el), se = Math.sin(el), ca = Math.cos(az), sa = Math.sin(az);
-            const eye = [CENTER[0]+radius*ce*ca, CENTER[1]+radius*ce*sa, CENTER[2]+radius*se];
-            const fwd = norm(sub(CENTER, eye)), right = norm(cross(fwd, [0,0,1])), down = cross(fwd, right);
+        const clampEl = v => Math.max(-1.45, Math.min(1.45, v));
+        const clampR = v => Math.max(2.0, Math.min(8.0, v));
+        const catmull = (p0,p1,p2,p3,u) => { const u2=u*u, u3=u2*u; return 0.5*((2*p1)+(-p0+p2)*u+(2*p0-5*p1+4*p2-p3)*u2+(-p0+3*p1-3*p2+p3)*u3); };
+
+        // orbit {az,el,radius} -> camera dict at normalized time t (look-at CENTER)
+        const camAtView = (o, t) => {
+            const ce=Math.cos(o.el), se=Math.sin(o.el), ca=Math.cos(o.az), sa=Math.sin(o.az);
+            const eye=[CENTER[0]+o.radius*ce*ca, CENTER[1]+o.radius*ce*sa, CENTER[2]+o.radius*se];
+            const fwd=norm(sub(CENTER,eye)), right=norm(cross(fwd,WUP)), down=cross(fwd,right);
             return { H: RH, W: RW, K: [[FL,0,RW/2],[0,FL,RH/2],[0,0,1]], R: [right, down, fwd],
-                T: [[-dot(right,eye)],[-dot(down,eye)],[-dot(fwd,eye)]], n: 0.02, f: 100.0, t: tval, v: 0.0,
+                T: [[-dot(right,eye)],[-dot(down,eye)],[-dot(fwd,eye)]], n: 0.02, f: 100.0, t: t, v: 0.0,
                 bounds: BOUNDS, mass: 0.1, moment_of_inertia: 0.1, movement_force: 1.0, movement_torque: 1.0,
-                movement_speed: 1.0, origin: CENTER, world_up: [0,0,1] };
+                movement_speed: 1.0, origin: CENTER, world_up: WUP };
         };
-        const fit = () => { const r = cv.getBoundingClientRect(); cv.width = r.width || 800; cv.height = r.height || 520; };
-        fit();
+
+        // camera keyframes -> interpolated orbit at performance frame f (Catmull-Rom through keys)
+        const rebuildKeys = () => {
+            keys.sort((a,b)=>a.f-b.f);
+            uAz=[]; let prev=null;
+            for (const k of keys) { let a=k.az; if(prev!==null){ while(a-prev>Math.PI)a-=2*Math.PI; while(a-prev<-Math.PI)a+=2*Math.PI; } uAz.push(a); prev=a; }
+            renderMarkers();
+        };
+        const orbitAt = f => {
+            const n=keys.length;
+            if (n===0) return { az:cur.az, el:cur.el, radius:cur.radius };
+            if (n===1) return { az:keys[0].az, el:keys[0].el, radius:keys[0].radius };
+            const fc=Math.max(keys[0].f, Math.min(keys[n-1].f, f));
+            let i=0; while (i<n-1 && keys[i+1].f<=fc) i++; if (i>n-2) i=n-2;
+            const i0=Math.max(0,i-1), i3=Math.min(n-1,i+2), span=(keys[i+1].f-keys[i].f)||1, u=(fc-keys[i].f)/span;
+            return { az: catmull(uAz[i0],uAz[i],uAz[i+1],uAz[i3],u),
+                     el: clampEl(catmull(keys[i0].el,keys[i].el,keys[i+1].el,keys[i3].el,u)),
+                     radius: clampR(catmull(keys[i0].radius,keys[i].radius,keys[i+1].radius,keys[i3].radius,u)) };
+        };
+
+        // ---- canvas ----
+        const fit = () => { const r = cv.getBoundingClientRect(); cv.width = r.width || 800; cv.height = r.height || 360; };
+        fit(); try { new ResizeObserver(() => fit()).observe(cv); } catch (e) {}
         const draw = bmp => {
             const s = Math.min(cv.width/bmp.width, cv.height/bmp.height), w = bmp.width*s, h = bmp.height*s;
             ctx.fillStyle = "#000"; ctx.fillRect(0, 0, cv.width, cv.height);
             ctx.save(); ctx.translate((cv.width-w)/2, (cv.height-h)/2+h); ctx.scale(1, -1);  // server flips its render
             ctx.drawImage(bmp, 0, 0, w, h); ctx.restore();
         };
+
+        // ---- timeline (playhead + keyframe markers) ----
+        const pct = f => (NFRAMES<=1 ? 0 : (f/(NFRAMES-1))*100);
+        timelineEl.innerHTML = '<div class="ph" style="position:absolute;top:0;bottom:0;width:2px;background:#48bb78;left:0;"></div>';
+        const phEl = timelineEl.querySelector(".ph");
+        const updatePlayhead = () => { phEl.style.left = pct(playhead)+"%"; };
+        function renderMarkers() {
+            timelineEl.querySelectorAll("[data-ki]").forEach(e => e.remove());
+            keys.forEach((k,i)=>{ const d=document.createElement("div"); d.dataset.ki=i; d.title=`camera key @frame ${k.f}`;
+                d.style.cssText=`position:absolute;top:50%;left:${pct(k.f)}%;width:11px;height:11px;margin:-6px 0 0 -6px;background:${i===selKey?'#f6ad55':'#6cf'};transform:rotate(45deg);border:1px solid #000;`;
+                timelineEl.appendChild(d); });
+            if (keycountEl) keycountEl.textContent = keys.length ? `${keys.length} cam key${keys.length>1?'s':''}` : "no keys (fixed angle)";
+            updatePlayhead();
+        }
+
+        // ---- ws ping-pong + modes ----
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        const url = `${proto}://${location.host}/4k4d/stream`;
+        const PRIME = 4;
+        let cache = new Array(NFRAMES).fill(null), recvCount = 0, sentCount = 0, playIdx = 0;
+        let active = false, playTimer = null, ws = null;
+        const setStatus = (t, c) => { statusEl.textContent = t; statusEl.style.color = c || "#888"; };
+        const sendCam = o => { if (ws && ws.readyState === 1) ws.send(zlibStore(JSON.stringify(o))); };
+        const easeStep = () => { cur.az += (tgt.az-cur.az)*EASE; cur.el += (tgt.el-cur.el)*EASE; cur.radius *= Math.pow(tgt.radius/cur.radius, EASE); };
+        const sendInteract = () => sendCam(camAtView(cur, playhead/(NFRAMES-1)));
+        const sendBuffer = () => { const fi = sentCount%NFRAMES, t = fi/(NFRAMES-1); sentCount++; sendCam(camAtView(orbitAt(fi), t)); };
+        const lockExport = () => { if (exportBtn) { exportBtn.disabled=true; exportBtn.style.opacity="0.5"; exportBtn.innerHTML="&#x2913; Export (needs Play)"; } };
+        const unlockExport = () => { if (exportBtn) { exportBtn.disabled=false; exportBtn.style.opacity="1"; exportBtn.innerHTML="&#x2913; Export MP4"; } };
+
+        function enterInteract() {   // orbit/scrub -> render current frame live (no re-buffer)
+            mode="interact"; playing=false; dirty=true; playBtn.innerHTML="&#x25B6; Play";
+            if (playTimer) { clearInterval(playTimer); playTimer=null; }
+            lockExport();
+            if (!active) { active=true; sendInteract(); }   // kick the ping-pong if idle
+        }
+        function startBuffer() {     // Play -> buffer the keyframed move, then play
+            mode="buffer"; cache=new Array(NFRAMES).fill(null); recvCount=0; sentCount=0;
+            if (playTimer) { clearInterval(playTimer); playTimer=null; }
+            lockExport(); setStatus(`buffering 0/${NFRAMES}`);
+            if (!active) { active=true; sendBuffer(); }
+        }
+        const startPlay = () => {    // cache full -> play at 30fps
+            mode="play"; active=false; playing=true; dirty=false;
+            playBtn.innerHTML="&#x23F8; Pause"; setStatus("playing 30fps", "#48bb78"); unlockExport();
+            if (playTimer) clearInterval(playTimer);
+            playTimer = setInterval(() => { if (!playing) return; const b = cache[playIdx]; if (b) draw(b);
+                playhead = playIdx; frameEl.textContent = `${playIdx}/${NFRAMES}`; updatePlayhead();
+                playIdx = (playIdx + 1) % NFRAMES; }, 1000 / 30);
+        };
+
+        // ---- controls ----
         let drag = false, lx = 0, ly = 0;
-        // stopPropagation so ComfyUI/LiteGraph doesn't drag the NODE while we orbit
-        cv.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); drag = true; lx = e.clientX; ly = e.clientY; cv.setPointerCapture(e.pointerId); });
-        cv.addEventListener("pointerup", e => { drag = false; });
-        cv.addEventListener("pointermove", e => { if (!drag) return; e.stopPropagation(); az -= (e.clientX-lx)*0.01; el = Math.max(-1.45, Math.min(1.45, el+(e.clientY-ly)*0.01)); lx = e.clientX; ly = e.clientY; invalidate(); });
-        cv.addEventListener("wheel", e => { e.preventDefault(); e.stopPropagation(); radius = Math.max(2.0, Math.min(8, radius*Math.exp(e.deltaY*0.001))); invalidate(); }, { passive: false });
-        slider.addEventListener("input", () => { playIdx = +slider.value; });
-        playBtn.addEventListener("click", () => { playing = !playing; playBtn.textContent = playing ? "Pause" : "Play"; });
-        resetBtn.addEventListener("click", () => { az = Math.PI/2; el = 0.58; radius = 3.33; invalidate(); });
-        // Export a high-quality MP4 of the whole performance from the CURRENT orbit angle.
+        // stopPropagation so ComfyUI/LiteGraph doesn't drag the NODE while we interact
+        cv.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); drag=true; lx=e.clientX; ly=e.clientY; cv.setPointerCapture(e.pointerId); });
+        cv.addEventListener("pointerup", () => { drag=false; });
+        cv.addEventListener("pointermove", e => { if(!drag)return; e.stopPropagation(); tgt.az -= (e.clientX-lx)*0.01; tgt.el = clampEl(tgt.el+(e.clientY-ly)*0.01); lx=e.clientX; ly=e.clientY; enterInteract(); });
+        cv.addEventListener("wheel", e => { e.preventDefault(); e.stopPropagation(); tgt.radius = clampR(tgt.radius*Math.exp(e.deltaY*0.001)); enterInteract(); }, { passive: false });
+
+        let scrubbing = false;
+        const scrubTo = e => { const r=timelineEl.getBoundingClientRect(); const x=Math.max(0,Math.min(1,(e.clientX-r.left)/(r.width||1)));
+            playhead = Math.round(x*(NFRAMES-1)); frameEl.textContent = `${playhead}/${NFRAMES}`;
+            if (keys.length>=2) tgt = orbitAt(playhead); enterInteract(); updatePlayhead(); };
+        timelineEl.addEventListener("pointerdown", e => { e.stopPropagation(); e.preventDefault(); scrubbing=true; timelineEl.setPointerCapture(e.pointerId);
+            const ki = e.target && e.target.dataset ? e.target.dataset.ki : undefined; if (ki!==undefined) { selKey=+ki; renderMarkers(); } scrubTo(e); });
+        timelineEl.addEventListener("pointermove", e => { if(!scrubbing)return; e.stopPropagation(); scrubTo(e); });
+        timelineEl.addEventListener("pointerup", () => { scrubbing=false; });
+
+        playBtn.addEventListener("click", () => {
+            if (mode==="play" && playing) { playing=false; playBtn.innerHTML="&#x25B6; Play"; setStatus("paused"); return; }
+            if (mode==="play" && !playing && !dirty) { playing=true; playBtn.innerHTML="&#x23F8; Pause"; setStatus("playing 30fps","#48bb78"); return; }
+            startBuffer();   // dirty / interacting -> (re)buffer the keyframed move then play
+        });
+        resetBtn.addEventListener("click", () => { tgt={...HOME}; enterInteract(); });
+        addKeyBtn.addEventListener("click", () => {
+            const k = { f:playhead, az:cur.az, el:cur.el, radius:cur.radius };
+            const ex = keys.findIndex(x=>x.f===k.f); if (ex>=0) keys[ex]=k; else keys.push(k);
+            rebuildKeys(); selKey = keys.findIndex(x=>x.f===k.f); dirty=true; renderMarkers();
+            setStatus(`added key @${k.f} (${keys.length} total)`, "#6cf");
+        });
+        delKeyBtn.addEventListener("click", () => {
+            if (!keys.length) return;
+            let bi=0, bd=1e9; keys.forEach((k,i)=>{ const d=Math.abs(k.f-playhead); if(d<bd){ bd=d; bi=i; } });
+            const f=keys[bi].f; keys.splice(bi,1); selKey=-1; rebuildKeys(); dirty=true;
+            setStatus(`deleted key @${f} (${keys.length} left)`, "#6cf");
+        });
+
+        // ---- export: the keyframed move (>=2 keys) or the current fixed angle ----
         exportBtn.addEventListener("click", async () => {
-            if (exportBtn.disabled) return;   // gated until the cache is fully built — no contention with buffering
+            if (exportBtn.disabled) return;
             const RES = 1080;
-            const base = buildCamera();   // current orbit extrinsics (R/T) + tight bounds
-            const cam = { H: RES, W: RES, K: [[RES*0.82,0,RES/2],[0,RES*0.82,RES/2],[0,0,1]],
-                          R: base.R, T: base.T, bounds: base.bounds, nframes: NFRAMES };
-            exportBtn.disabled = true; exportBtn.style.opacity = "0.5"; exportBtn.innerHTML = "&#x2913; Exporting&hellip;";
-            streaming = false; if (playTimer) { clearInterval(playTimer); playTimer = null; }  // free the render-server for the export
+            const cam = { H: RES, W: RES, K: [[RES*0.82,0,RES/2],[0,RES*0.82,RES/2],[0,0,1]], bounds: BOUNDS, nframes: NFRAMES, center: CENTER, world_up: WUP };
+            if (keys.length>=2) cam.keyframes = keys.map(k=>({ f:k.f, az:k.az, el:k.el, radius:k.radius }));
+            else { const base = camAtView(keys.length===1?keys[0]:cur, 0); cam.R = base.R; cam.T = base.T; }
+            exportBtn.disabled=true; exportBtn.style.opacity="0.5"; exportBtn.innerHTML="&#x2913; Exporting&hellip;";
+            playing=false; active=false; if (playTimer) { clearInterval(playTimer); playTimer=null; }  // free the render-server
             setStatus("export: starting…", "#f6ad55");
             let info;
-            try {
-                const r = await fetch("/4k4d/export_video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cam) });
-                info = await r.json();
-            } catch (e) { setStatus("export: request failed", "#e53e3e"); return; }
+            try { info = await (await fetch("/4k4d/export_video", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(cam) })).json(); }
+            catch (e) { setStatus("export: request failed", "#e53e3e"); dirty=true; return; }
             const poll = setInterval(async () => {
-                let txt = ""; try { txt = await (await fetch(info.log_url + "&_=" + Date.now())).text(); } catch (e) {}
-                const m = txt.match(/rendering \d+\/\d+/g);
-                if (m) setStatus("export: " + m[m.length - 1], "#f6ad55");
+                let txt=""; try { txt = await (await fetch(info.log_url + "&_=" + Date.now())).text(); } catch (e) {}
+                const m = txt.match(/rendering \d+\/\d+/g); if (m) setStatus("export: " + m[m.length-1], "#f6ad55");
                 if (/EXPORT DONE/.test(txt)) {
                     clearInterval(poll); setStatus("export: done ✓ — downloading", "#48bb78");
-                    const a = document.createElement("a"); a.href = info.mp4_url; a.download = "dome_dancer_4d.mp4";
-                    document.body.appendChild(a); a.click(); a.remove();
+                    const a = document.createElement("a"); a.href = info.mp4_url; a.download = "dome_dancer_4d.mp4"; document.body.appendChild(a); a.click(); a.remove();
                     window.app.api.dispatchEvent(new CustomEvent("4k4d.viewer.load", { detail: { mp4_path: info.mp4_path, autoplay: true, loop: true } }));
-                    setTimeout(invalidate, 800);   // resume the live view
-                } else if (/EXPORT (FAIL|ERROR)/.test(txt)) { clearInterval(poll); setStatus("export: failed", "#e53e3e"); setTimeout(invalidate, 800); }
+                    dirty=true; setTimeout(() => playBtn.click(), 600);   // re-buffer + resume the live view
+                } else if (/EXPORT (FAIL|ERROR)/.test(txt)) { clearInterval(poll); setStatus("export: failed", "#e53e3e"); dirty=true; }
             }, 1500);
         });
 
-        const proto = location.protocol === "https:" ? "wss" : "ws";
-        const url = `${proto}://${location.host}/4k4d/stream`;
-        // cache-then-play: the live IBR render is ~6fps, so buffer all NFRAMES once at the
-        // current view, then play the cache at a true 30fps. Orbiting re-buffers the new view.
-        const PRIME = 4;
-        let cache = new Array(NFRAMES).fill(null), recvCount = 0, sentCount = 0, playIdx = 0;
-        let streaming = false, playTimer = null, ws = null;
-        const setStatus = (t, c) => { statusEl.textContent = t; statusEl.style.color = c || "#888"; };
-        const reqCamera = () => { tval = (sentCount % NFRAMES) / (NFRAMES - 1); sentCount++; if (ws && ws.readyState === 1) ws.send(zlibStore(JSON.stringify(buildCamera()))); };
-        const startPlay = () => {
-            streaming = false; setStatus("live: playing 30fps", "#48bb78");
-            if (exportBtn) { exportBtn.disabled = false; exportBtn.style.opacity = "1"; exportBtn.innerHTML = "&#x2913; Export MP4"; }   // cache complete -> export unlocked
-            if (playTimer) clearInterval(playTimer);
-            playTimer = setInterval(() => { if (!playing) return; const b = cache[playIdx]; if (b) draw(b); slider.value = playIdx; frameEl.textContent = `${playIdx}/${NFRAMES}`; playIdx = (playIdx + 1) % NFRAMES; }, 1000 / 30);
-        };
-        function invalidate() {   // camera changed -> rebuild cache for the new view
-            cache = new Array(NFRAMES).fill(null); recvCount = 0; sentCount = 0;
-            if (playTimer) { clearInterval(playTimer); playTimer = null; }
-            if (exportBtn) { exportBtn.disabled = true; exportBtn.style.opacity = "0.5"; exportBtn.innerHTML = "&#x2913; Export (buffering&hellip;)"; }   // lock export while re-buffering
-            setStatus(`live: buffering 0/${NFRAMES}`);
-            if (!streaming) { streaming = true; reqCamera(); }
-        }
+        // ---- connect ----
         const connect = () => {
             ws = new WebSocket(url); ws.binaryType = "arraybuffer";
-            ws.onopen = () => { setStatus("live: buffering…"); streaming = true; reqCamera(); };
-            ws.onclose = () => { setStatus("live: disconnected — retry", "#e53e3e"); streaming = false; if (playTimer) { clearInterval(playTimer); playTimer = null; } setTimeout(connect, 1500); };
-            ws.onerror = () => { setStatus("live: error (render-server up?)", "#e53e3e"); };
+            ws.onopen = () => { setStatus("buffering…"); startBuffer(); };
+            ws.onclose = () => { setStatus("disconnected — retry", "#e53e3e"); active=false; if (playTimer) { clearInterval(playTimer); playTimer=null; } setTimeout(connect, 1500); };
+            ws.onerror = () => { setStatus("starting render-server (loading model ~2 min)…", "#f6ad55"); };
             ws.onmessage = async ev => {
                 let bmp = null; try { bmp = await createImageBitmap(new Blob([ev.data], { type: "image/jpeg" })); } catch (e) {}
-                if (!streaming) return;                  // playing from cache; ignore stray frames
-                recvCount++;
-                const idx = recvCount - PRIME - 1;       // skip PRIME warm-up frames (default cam + render lag)
-                if (idx >= 0 && idx < NFRAMES && bmp) { cache[idx] = bmp; draw(bmp); setStatus(`live: buffering ${idx + 1}/${NFRAMES}`); }
-                else if (bmp) draw(bmp);
-                if (idx + 1 >= NFRAMES) { startPlay(); return; }   // cache full -> play at 30fps
-                reqCamera();
+                if (!active) return;
+                if (mode === "interact") { if (bmp) draw(bmp); easeStep(); sendInteract(); return; }
+                if (mode === "buffer") {
+                    recvCount++; const idx = recvCount - PRIME - 1;
+                    if (idx>=0 && idx<NFRAMES && bmp) { cache[idx]=bmp; draw(bmp); setStatus(`buffering ${idx+1}/${NFRAMES}`); }
+                    else if (bmp) draw(bmp);
+                    if (idx+1>=NFRAMES) { startPlay(); return; }
+                    sendBuffer(); return;
+                }
             };
         };
-        connect();
+        rebuildKeys(); connect();
     },
 
     _addStatusWidget(node) {

@@ -76,13 +76,58 @@ try:
         _os.makedirs(frames_dir, exist_ok=True)
         for f in _glob.glob(frames_dir + "/*.jpg"):
             _os.remove(f)
-        H, W, K, R, T, bounds = cam["H"], cam["W"], cam["K"], cam["R"], cam["T"], cam["bounds"]
-        def camt(t):
+        import math as _math
+        H, W, K, bounds = cam["H"], cam["W"], cam["K"], cam["bounds"]
+        center = cam.get("center", [0.0, 0.0, 0.6]); wup = cam.get("world_up", [0, 0, 1])
+        fixedR, fixedT = cam.get("R"), cam.get("T")
+        keys = sorted(cam.get("keyframes") or [], key=lambda k: k["f"])
+        # unwrap az across keys (shortest-path) so the spline never jumps the long way round
+        uaz = []; _p = None
+        for k in keys:
+            a = float(k["az"])
+            if _p is not None:
+                while a - _p > _math.pi: a -= 2 * _math.pi
+                while a - _p < -_math.pi: a += 2 * _math.pi
+            uaz.append(a); _p = a
+        def _catmull(p0, p1, p2, p3, u):
+            u2 = u * u; u3 = u2 * u
+            return 0.5 * ((2*p1) + (-p0+p2)*u + (2*p0-5*p1+4*p2-p3)*u2 + (-p0+3*p1-3*p2+p3)*u3)
+        def _orbit_at(f):   # interpolated (az, el, radius) at performance frame f
+            n = len(keys)
+            if n == 1:
+                k = keys[0]; return float(k["az"]), float(k["el"]), float(k["radius"])
+            fc = max(keys[0]["f"], min(keys[n-1]["f"], f))
+            i = 0
+            while i < n-1 and keys[i+1]["f"] <= fc: i += 1
+            if i > n-2: i = n-2
+            i0 = max(0, i-1); i3 = min(n-1, i+2)
+            span = (keys[i+1]["f"] - keys[i]["f"]) or 1; u = (fc - keys[i]["f"]) / span
+            az = _catmull(uaz[i0], uaz[i], uaz[i+1], uaz[i3], u)
+            el = _catmull(keys[i0]["el"], keys[i]["el"], keys[i+1]["el"], keys[i3]["el"], u)
+            rad = _catmull(keys[i0]["radius"], keys[i]["radius"], keys[i+1]["radius"], keys[i3]["radius"], u)
+            return az, max(-1.45, min(1.45, el)), max(2.0, min(8.0, rad))
+        def _RT(az, el, radius):   # orbit -> world->cam R,T about `center` (mirrors the JS camAtView)
+            ce, se, ca, sa = _math.cos(el), _math.sin(el), _math.cos(az), _math.sin(az)
+            eye = [center[0]+radius*ce*ca, center[1]+radius*ce*sa, center[2]+radius*se]
+            def sub(a, b): return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]
+            def crs(a, b): return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]
+            def dot(a, b): return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]
+            def nrm(a):
+                l = (a[0]*a[0]+a[1]*a[1]+a[2]*a[2]) ** 0.5 or 1.0; return [a[0]/l, a[1]/l, a[2]/l]
+            fwd = nrm(sub(center, eye)); right = nrm(crs(fwd, list(wup))); down = crs(fwd, right)
+            return [right, down, fwd], [[-dot(right, eye)], [-dot(down, eye)], [-dot(fwd, eye)]]
+        def _RT_at(i):   # per-frame R,T: keyframed move (>=2 keys), single key, or fixed angle
+            if len(keys) >= 2: return _RT(*_orbit_at(i))
+            if len(keys) == 1:
+                k = keys[0]; return _RT(float(k["az"]), float(k["el"]), float(k["radius"]))
+            return fixedR, fixedT
+        def camt(i):
+            R, T = _RT_at(i); t = i / (nframes - 1)
             return {"H": H, "W": W, "K": K, "R": R, "T": T, "n": 0.02, "f": 100.0, "t": t, "v": 0.0,
                     "bounds": bounds, "mass": 0.1, "moment_of_inertia": 0.1, "movement_force": 1.0,
-                    "movement_torque": 1.0, "movement_speed": 1.0, "origin": [0, 0, 0.13], "world_up": [0, 0, 1]}
-        def cmsg(t):
-            return _zlib.compress(_json.dumps(camt(t)).encode("ascii"))
+                    "movement_torque": 1.0, "movement_speed": 1.0, "origin": center, "world_up": wup}
+        def cmsg(i):
+            return _zlib.compress(_json.dumps(camt(i)).encode("ascii"))
         async def wait_fresh(ws, msg, prev, timeout=6.0):
             # The render-server runs a continuous render_loop (rasterizes self.camera, only
             # ~2-3 fps at 1080) decoupled from the server_loop (ships the LATEST rendered
@@ -112,7 +157,7 @@ try:
                     prev = m0.data if isinstance(m0.data, (bytes, bytearray)) else None
                     for i in range(nframes):
                         # wait for a genuinely fresh render of this exact timestep (no dupes)
-                        prev = await wait_fresh(ws, cmsg(i / (nframes - 1)), prev)
+                        prev = await wait_fresh(ws, cmsg(i), prev)
                         with open("%s/f%04d.jpg" % (frames_dir, i), "wb") as f:
                             f.write(prev)
                         if i % 10 == 0:
@@ -132,8 +177,11 @@ try:
         client polls the log."""
         body = await request.json()
         nframes = int(body.get("nframes", 131))
-        cam = {"H": int(body["H"]), "W": int(body["W"]), "K": body["K"], "R": body["R"],
-               "T": body["T"], "bounds": body["bounds"]}
+        cam = {"H": int(body["H"]), "W": int(body["W"]), "K": body["K"], "bounds": body["bounds"],
+               "R": body.get("R"), "T": body.get("T"),
+               "center": body.get("center", [0.0, 0.0, 0.6]),
+               "world_up": body.get("world_up", [0, 0, 1]),
+               "keyframes": body.get("keyframes")}
         job = str(int(_time.time()))
         mp4 = os.path.abspath(os.path.join(_EXPORT_OUT, "export_%s.mp4" % job))
         log_path = "/tmp/4k4d_export_%s.log" % job
